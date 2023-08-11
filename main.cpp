@@ -149,7 +149,7 @@ int main(int, char**)
     bool done = false;
     while (!done)
     {
-        FOO_FRAME();
+        PROFILE_FRAME();
 
         // Poll and handle messages (inputs, window resize, etc.)
         // See the WndProc() function below for our to dispatch events to the Win32 backend.
@@ -174,13 +174,13 @@ int main(int, char**)
         // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
         if (show_demo_window)
         {
-            FOO_SCOPE("Demo");
+            PROFILE_CPU_SCOPE("Demo");
             ImGui::ShowDemoWindow(&show_demo_window);
         }
 
         // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
         {
-            FOO_SCOPE("Simple Window");
+            PROFILE_CPU_SCOPE("Simple Window");
             static float f = 0.0f;
             static int counter = 0;
 
@@ -205,7 +205,7 @@ int main(int, char**)
         // 3. Show another simple window.
         if (show_another_window)
         {
-            FOO_SCOPE("Another Window");
+            PROFILE_CPU_SCOPE("Another Window");
             ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
             ImGui::Text("Hello from another window!");
             if (ImGui::Button("Close Me"))
@@ -215,7 +215,7 @@ int main(int, char**)
 
         // Rendering
         {
-            FOO_SCOPE("ImGui Render");
+            PROFILE_CPU_SCOPE("ImGui Render");
             ImGui::Render();
         }
 
@@ -233,7 +233,7 @@ int main(int, char**)
         g_pd3dCommandList->Reset(frameCtx->CommandAllocator, nullptr);
 
         {
-            FOO_GPU_SCOPE("Render", g_pd3dCommandList);
+            PROFILE_GPU_SCOPE("Render", g_pd3dCommandList);
             g_pd3dCommandList->ResourceBarrier(1, &barrier);
 
             // Render Dear ImGui graphics

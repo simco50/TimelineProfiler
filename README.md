@@ -39,21 +39,21 @@ gGPUProfiler.Shutdown();
 
 **Call at the start of each frame**
 
-`FOO_FRAME()`
+`PROFILE_FRAME()`
 
 **CPU Event**
 
-`FOO_SCOPE()` to add a CPU event. Optionally specify a custom name
+`PROFILE_CPU_SCOPE()` to add a CPU event. Optionally specify a custom name
 
 **GPU Event**
 
-`FOO_SCOPE(name, commandlist, queueIndex)` to add a GPU event.
+`PROFILE_GPU_SCOPE(name, commandlist, queueIndex)` to add a GPU event.
 
 Specify a name, the ID3D12GraphicsCommandList, and optionally the queue index this commandlist will execute on (0 by default)
 
 **Registering a thread**
 
-`FOO_REGISTER_THREAD(name)` to register a thread.
+`PROFILE_REGISTER_THREAD(name)` to register a thread.
 
 The registration order of threads will define the order in the timeline
 If a thread is not registered, it will lazy-register when an event is created first.

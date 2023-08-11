@@ -9,7 +9,7 @@
 #include <assert.h>
 #include <d3d12.h>
 
-#define check(op) assert(op)
+#define check(op, ...) assert(op)
 #define checkf(op, ...) assert(op)
 #define VERIFY_HR(op) assert(SUCCEEDED(op))
 
@@ -21,27 +21,74 @@
 using uint64 = uint64_t;
 using uint32 = uint32_t;
 using uint16 = uint16_t;
+template<typename T>
+using Span = std::span<T>;
+
+#ifndef WITH_PROFILING
+#define WITH_PROFILING 1
+#endif
+
+#if WITH_PROFILING
+
+/*
+	General
+*/
 
 // Usage:
-//		FOO_SCOPE(const char* pNamer)
-//		FOO_SCOPE(const char* pName)
-//		FOO_SCOPE()
-#define FOO_SCOPE(...) FooProfileScope MACRO_CONCAT(profiler, __COUNTER__)(__FUNCTION__, __FILE__, __LINE__, __VA_ARGS__)
-
-// Usage:
-//		FOO_REGISTER_THREAD(const char* pName)
-//		FOO_REGISTER_THREAD()
-#define FOO_REGISTER_THREAD(...) gProfiler.RegisterThread(__VA_ARGS__)
+//		PROFILE_REGISTER_THREAD(const char* pName)
+//		PROFILE_REGISTER_THREAD()
+#define PROFILE_REGISTER_THREAD(...) gCPUProfiler.RegisterThread(__VA_ARGS__)
 
 /// Usage:
-//		FOO_FRAME()
-#define FOO_FRAME() gProfiler.Tick(); gGPUProfiler.Tick()
+//		PROFILE_FRAME()
+#define PROFILE_FRAME() gCPUProfiler.Tick(); gGPUProfiler.Tick()
+
+/*
+	CPU Profiling
+*/
 
 // Usage:
-//		FOO_GPU_SCOPE(const char* pName, ID3D12GraphicsCommandList* pCommandList, uint32 queueIndex)
-//		FOO_GPU_SCOPE(const char* pName, ID3D12GraphicsCommandList* pCommandList)
-#define FOO_GPU_SCOPE(...) FooGPUProfileScope MACRO_CONCAT(gpu_profiler, __COUNTER__)(__FUNCTION__, __FILE__, __LINE__, __VA_ARGS__)
+//		PROFILE_CPU_SCOPE(const char* pName)
+//		PROFILE_CPU_SCOPE()
+#define PROFILE_CPU_SCOPE(...)							CPUProfileScope MACRO_CONCAT(profiler, __COUNTER__)(__FUNCTION__, __FILE__, __LINE__, __VA_ARGS__)
 
+// Usage:
+//		PROFILE_CPU_BEGIN(const char* pName)
+//		PROFILE_CPU_BEGIN()
+#define PROFILE_CPU_BEGIN(...)							gCPUProfiler.PushRegion(__VA_ARGS__)
+// Usage:
+//		PROFILE_CPU_END()
+#define PROFILE_CPU_END()								gCPUProfiler.PopRegion()
+
+/*
+	GPU Profiling
+*/
+
+// Usage:
+//		PROFILE_GPU_SCOPE(const char* pName, ID3D12GraphicsCommandList* pCommandList, uint32 queueIndex)
+//		PROFILE_GPU_SCOPE(const char* pName, ID3D12GraphicsCommandList* pCommandList)
+#define PROFILE_GPU_SCOPE(...)							GPUProfileScope MACRO_CONCAT(gpu_profiler, __COUNTER__)(__FUNCTION__, __FILE__, __LINE__, __VA_ARGS__)
+
+// Usage:
+//		PROFILE_GPU_BEGIN(const char* pName, ID3D12GraphicsCommandList* pCommandList, uint32 queueIndex)
+//		PROFILE_GPU_BEGIN(const char* pName, ID3D12GraphicsCommandList* pCommandList)
+#define PROFILE_GPU_BEGIN(name, cmdlist, ...)			gGPUProfiler.PushRegion(name, cmdlist, __VA_ARGS__);
+// Usage:
+//		PROFILE_GPU_END()
+#define PROFILE_GPU_END()								gGPUProfiler.PopRegion();
+
+#else
+
+#define PROFILE_REGISTER_THREAD(...)
+#define PROFILE_FRAME()
+#define PROFILE_CPU_SCOPE(...)
+#define PROFILE_CPU_BEGIN(...)
+#define PROFILE_CPU_END()
+#define PROFILE_GPU_SCOPE(...)
+#define PROFILE_GPU_BEGIN(...)
+#define PROFILE_GPU_END()
+
+#endif
 
 // Simple Linear Allocator
 class LinearAllocator
@@ -274,7 +321,7 @@ private:
 			{
 				pResolveCommandList->Close();
 			}
-			frame.ReadbackQueries = std::span<const uint64>(m_pReadbackData + frame.QueryStartOffset, frame.QueryIndex * 2);
+			frame.ReadbackQueries = Span<const uint64>(m_pReadbackData + frame.QueryStartOffset, frame.QueryIndex * 2);
 			// Increment fence value, signal queue and store FenceValue in frame.
 			++FenceValue;
 			pResolveQueue->Signal(pFence, FenceValue);
@@ -289,14 +336,14 @@ private:
 			// Don't allow the next frame to start until its resolve is finished.
 			if (!IsFenceComplete(newFrame.FenceValue))
 			{
-				checkf(false, "Resolve() should not have to wait for the resolve of the upcoming frame to finish. Increase NumFrames.");
+				check(false, "Resolve() should not have to wait for the resolve of the upcoming frame to finish. Increase NumFrames.");
 				pFence->SetEventOnCompletion(newFrame.FenceValue, FenceEvent);
 				WaitForSingleObject(FenceEvent, INFINITE);
 			}
 		}
 
 		// Return the view to the resolved queries and returns true if it's valid to read from
-		bool GetResolvedQueries(uint32 frameIndex, std::span<const uint64>& outData)
+		bool GetResolvedQueries(uint32 frameIndex, Span<const uint64>& outData)
 		{
 			if (!IsInitialized())
 				return true;
@@ -321,7 +368,7 @@ private:
 	private:
 		struct FrameData
 		{
-			std::span<const uint64> ReadbackQueries;			// View to resolved query data
+			Span<const uint64> ReadbackQueries;					// View to resolved query data
 			ID3D12CommandAllocator* pAllocator = nullptr;		// CommandAllocator for this frame
 			std::atomic<uint32> QueryIndex = 0;					// Current number of queries
 			uint64 FenceValue = 0;								// FenceValue indicating when Resolve is finished
@@ -445,7 +492,7 @@ public:
 		// While the next frame to resolve is not the last one, attempt access the readback data and advance.
 		while (m_FrameToResolve < m_FrameIndex)
 		{
-			std::span<const uint64> copyQueries, mainQueries;
+			Span<const uint64> copyQueries, mainQueries;
 			bool copiesValid = m_CopyQueryHeap.GetResolvedQueries(m_FrameToResolve, copyQueries);
 			bool mainValid = m_MainQueryHeap.GetResolvedQueries(m_FrameToResolve, mainQueries);
 			if (!(copiesValid && mainValid))
@@ -460,7 +507,7 @@ public:
 			{
 				SampleRegion& region = data.Regions[i];
 				const QueueInfo& queue = m_Queues[region.QueueIndex];
-				const std::span<const uint64>& queries = queue.IsCopyQueue ? copyQueries : mainQueries;
+				const Span<const uint64>& queries = queue.IsCopyQueue ? copyQueries : mainQueries;
 				region.BeginTicks = queries[region.TimerIndex * 2 + 0];
 				region.EndTicks = queries[region.TimerIndex * 2 + 1];
 			}
@@ -587,7 +634,7 @@ public:
 		LinearAllocator Allocator;							// Scratch allocator storing all dynamic allocations of the frame
 	};
 
-	std::span<const QueueInfo> GetQueueInfo() const { return m_Queues; }
+	Span<const QueueInfo> GetQueueInfo() const { return m_Queues; }
 
 	// Iterate over all sample regions
 	template<typename Fn>
@@ -664,25 +711,25 @@ private:
 
 
 // Helper RAII-style structure to push and pop a GPU sample region
-struct FooGPUProfileScope
+struct GPUProfileScope
 {
-	FooGPUProfileScope(const char* pFunction, const char* pFilePath, uint16 lineNr, const char* pName, ID3D12GraphicsCommandList* pCmd, uint16 queueIndex = 0)
+	GPUProfileScope(const char* pFunction, const char* pFilePath, uint16 lineNr, const char* pName, ID3D12GraphicsCommandList* pCmd, uint16 queueIndex = 0)
 	{
 		gGPUProfiler.PushRegion(pName, pCmd, queueIndex, pFilePath, lineNr);
 	}
 
-	FooGPUProfileScope(const char* pFunction, const char* pFilePath, uint16 lineNr, ID3D12GraphicsCommandList* pCmd, uint16 queueIndex = 0)
+	GPUProfileScope(const char* pFunction, const char* pFilePath, uint16 lineNr, ID3D12GraphicsCommandList* pCmd, uint16 queueIndex = 0)
 	{
 		gGPUProfiler.PushRegion(pFunction, pCmd, queueIndex, pFilePath, lineNr);
 	}
 
-	~FooGPUProfileScope()
+	~GPUProfileScope()
 	{
 		gGPUProfiler.PopRegion();
 	}
 
-	FooGPUProfileScope(const FooGPUProfileScope&) = delete;
-	FooGPUProfileScope& operator=(const FooGPUProfileScope&) = delete;
+	GPUProfileScope(const GPUProfileScope&) = delete;
+	GPUProfileScope& operator=(const GPUProfileScope&) = delete;
 };
 
 
@@ -691,7 +738,7 @@ struct FooGPUProfileScope
 //-----------------------------------------------------------------------------
 
 // Global CPU Profiler
-extern class FooProfiler gProfiler;
+extern class CPUProfiler gCPUProfiler;
 
 struct CPUProfilerCallbacks
 {
@@ -702,7 +749,7 @@ struct CPUProfilerCallbacks
 // CPU Profiler
 // Also responsible for updating GPU profiler
 // Also responsible for drawing HUD
-class FooProfiler
+class CPUProfiler
 {
 public:
 	static constexpr int REGION_HISTORY = 5;
@@ -860,7 +907,7 @@ public:
 		m_EventCallbacks.push_back(inCallbacks);
 	}
 
-	std::span<const ThreadData> GetThreads() const { return m_ThreadData; }
+	Span<const ThreadData> GetThreads() const { return m_ThreadData; }
 
 	void SetPaused(bool paused) { m_QueuedPaused = paused; }
 	bool IsPaused() const { return m_Paused; }
@@ -901,23 +948,23 @@ private:
 
 
 // Helper RAII-style structure to push and pop a CPU sample region
-struct FooProfileScope
+struct CPUProfileScope
 {
-	FooProfileScope(const char* pFunctionName, const char* pFilePath, uint16 lineNumber, const char* pName)
+	CPUProfileScope(const char* pFunctionName, const char* pFilePath, uint16 lineNumber, const char* pName)
 	{
-		gProfiler.PushRegion(pName, pFilePath, lineNumber);
+		gCPUProfiler.PushRegion(pName, pFilePath, lineNumber);
 	}
 
-	FooProfileScope(const char* pFunctionName, const char* pFilePath, uint16 lineNumber)
+	CPUProfileScope(const char* pFunctionName, const char* pFilePath, uint16 lineNumber)
 	{
-		gProfiler.PushRegion(pFunctionName, pFilePath, lineNumber);
+		gCPUProfiler.PushRegion(pFunctionName, pFilePath, lineNumber);
 	}
 
-	~FooProfileScope()
+	~CPUProfileScope()
 	{
-		gProfiler.PopRegion();
+		gCPUProfiler.PopRegion();
 	}
 
-	FooProfileScope(const FooProfileScope&) = delete;
-	FooProfileScope& operator=(const FooProfileScope&) = delete;
+	CPUProfileScope(const CPUProfileScope&) = delete;
+	CPUProfileScope& operator=(const CPUProfileScope&) = delete;
 };
