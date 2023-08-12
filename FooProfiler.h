@@ -330,8 +330,6 @@ private:
 			// Advance to next frame and reset
 			++FrameIndex;
 			FrameData& newFrame = GetData();
-			newFrame.QueryIndex = 0;
-			pResolveCommandList->Reset(newFrame.pAllocator, nullptr);
 
 			// Don't allow the next frame to start until its resolve is finished.
 			if (!IsFenceComplete(newFrame.FenceValue))
@@ -340,6 +338,10 @@ private:
 				pFence->SetEventOnCompletion(newFrame.FenceValue, FenceEvent);
 				WaitForSingleObject(FenceEvent, INFINITE);
 			}
+
+			newFrame.QueryIndex = 0;
+			newFrame.pAllocator->Reset();
+			pResolveCommandList->Reset(newFrame.pAllocator, nullptr);
 		}
 
 		// Return the view to the resolved queries and returns true if it's valid to read from
