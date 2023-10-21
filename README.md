@@ -9,13 +9,14 @@ GPU profiler only supports D3D12
 ### Setup
 
 Add files to project:
-- FooProfiler.cpp
-- FooProfiler.h
+- Profiler.h
+- Profiler.cpp
+- ProfilerWindow.cpp
 - IconsFontAwesome4.h
 - fontawesome-webfont.ttf
 
 Add the icon font and merge it with your main font
-```
+```c++
 ImFontConfig fontConfig;
 fontConfig.MergeMode = true;
 fontConfig.GlyphMinAdvanceX = 15.0f
