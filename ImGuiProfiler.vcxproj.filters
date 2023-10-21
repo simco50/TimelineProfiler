@@ -15,9 +15,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="FooProfiler.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="IconsFontAwesome4.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -45,11 +42,11 @@
     <ClInclude Include="ImGui\imgui_impl_dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Profiler.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="FooProfiler.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="ImGui\imgui_impl_win32.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -72,6 +69,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Profiler.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ProfilerWindow.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

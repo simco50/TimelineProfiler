@@ -1,10 +1,8 @@
 
-#include "FooProfiler.h"
+#include "Profiler.h"
+#include "ImGui/imgui.h"
 #include "ImGui/imgui_internal.h"
 #include "IconsFontAwesome4.h"
-
-CPUProfiler gCPUProfiler;
-GPUProfiler gGPUProfiler;
 
 struct StyleOptions
 {
@@ -35,6 +33,7 @@ struct HUDContext
 	char SearchString[128]{};
 	bool PauseThreshold = false;
 	float PauseThresholdTime = 100.0f;
+	bool IsPaused = false;
 };
 
 static HUDContext gHUDContext;
@@ -165,15 +164,17 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 
 		// Add dark shade background for every even frame
 		int frameNr = 0;
-		gCPUProfiler.ForEachFrame([&](uint32 frameIndex, const CPUProfiler::SampleHistory& data)
+		URange cpuRange = gCPUProfiler.GetFrameRange();
+		for(uint32 i = cpuRange.Begin; i < cpuRange.End; ++i)
+		{
+			Span<const CPUProfiler::EventFrame::Event> events = gCPUProfiler.GetEventsForThread(gCPUProfiler.GetThreads()[0], i);
+			if (events.size() > 0 && frameNr++ % 2 == 0)
 			{
-				if (frameNr++ % 2 == 0)
-				{
-					float beginOffset = (data.Regions[0].BeginTicks - beginAnchor) * TicksToPixels;
-					float endOffset = (data.Regions[0].EndTicks - beginAnchor) * TicksToPixels;
-					pDraw->AddRectFilled(ImVec2(cursor.x + beginOffset, timelineRect.Min.y), ImVec2(cursor.x + endOffset, timelineRect.Max.y), ImColor(1.0f, 1.0f, 1.0f, 0.05f));
-				}
-			});
+				float beginOffset = (events[0].TicksBegin - beginAnchor) * TicksToPixels;
+				float endOffset = (events[0].TicksEnd - beginAnchor) * TicksToPixels;
+				pDraw->AddRectFilled(ImVec2(cursor.x + beginOffset, timelineRect.Min.y), ImVec2(cursor.x + endOffset, timelineRect.Max.y), ImColor(1.0f, 1.0f, 1.0f, 0.05f));
+			}
+		}
 
 		ImGui::PushClipRect(timelineRect.Min + ImVec2(0, style.BarHeight), timelineRect.Max, true);
 
@@ -318,62 +319,56 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 			return isOpen;
 		};
 
-		// Draw each GPU thread track
-		Span<const GPUProfiler::QueueInfo> queues = gGPUProfiler.GetQueueInfo();
-		for (uint32 queueIndex = 0; queueIndex < queues.size(); ++queueIndex)
 		{
-			const GPUProfiler::QueueInfo& queue = queues[queueIndex];
+			URange gpuRange = gGPUProfiler.GetFrameRange();
+			for (const GPUProfiler::QueueInfo& queue : gGPUProfiler.GetQueues())
+			{
+				// Add thread name for track
+				bool isOpen = TrackHeader(queue.Name, ImGui::GetID(&queue));
+				uint32 maxDepth = isOpen ? style.MaxDepth : 1;
+				uint32 trackDepth = 1;
+				cursor.y += style.BarHeight;
 
-			// Add thread name for track
-			bool isOpen = TrackHeader(queue.Name, ImGui::GetID(&queue));
-			uint32 maxDepth = isOpen ? style.MaxDepth : 1;
-			uint32 trackDepth = 1;
-			cursor.y += style.BarHeight;
-
-			// Add a bar in the right place for each sample region
-			/*
-				|[=============]			|
-				|	[======]				|
-			*/
-			gGPUProfiler.ForEachFrame([&](uint32 frameIndex, const GPUProfiler::SampleHistory& data)
+				for (uint32 i = gpuRange.Begin; i < gpuRange.End; ++i)
 				{
-					for (uint32 regionIndex = 0; regionIndex < data.NumRegions; ++regionIndex)
+					// Add a bar in the right place for each event
+					/*
+						|[=============]			|
+						|	[======]				|
+					*/
+					Span<const GPUProfiler::EventFrame::Event> events = gGPUProfiler.GetEventsForQueue(queue, i);
+					for (const GPUProfiler::EventFrame::Event& event : events)
 					{
-						const GPUProfiler::SampleRegion& region = data.Regions[regionIndex];
-
-						// Only process regions for the current queue
-						if (queueIndex != region.QueueIndex)
-							continue;
-						// Skip regions above the max depth
-						if ((int)region.Depth >= maxDepth)
+						// Skip events above the max depth
+						if ((int)event.Depth >= maxDepth)
 							continue;
 
-						trackDepth = ImMax(trackDepth, (uint32)region.Depth + 1);
+						trackDepth = ImMax(trackDepth, (uint32)event.Depth + 1);
 
-						uint64 cpuBeginTicks = queue.GpuToCpuTicks(region.BeginTicks);
-						uint64 cpuEndTicks = queue.GpuToCpuTicks(region.EndTicks);
+						uint64 cpuBeginTicks = queue.GpuToCpuTicks(event.TicksBegin);
+						uint64 cpuEndTicks = queue.GpuToCpuTicks(event.TicksEnd);
 
 						bool hovered;
-						DrawBar(ImGui::GetID(&region), cpuBeginTicks, cpuEndTicks, region.Depth, region.pName, &hovered);
+						DrawBar(ImGui::GetID(&event), cpuBeginTicks, cpuEndTicks, event.Depth, event.pName, &hovered);
 						if (hovered)
 						{
 							if (ImGui::BeginTooltip())
 							{
-								ImGui::Text("%s | %.3f ms", region.pName, TicksToMs * (float)(cpuEndTicks - cpuBeginTicks));
-								ImGui::Text("Frame %d", frameIndex);
-								if (region.pFilePath)
-									ImGui::Text("%s:%d", region.pFilePath, region.LineNumber);
+								ImGui::Text("%s | %.3f ms", event.pName, TicksToMs * (float)(cpuEndTicks - cpuBeginTicks));
+								ImGui::Text("Frame %d", i);
+								if (event.pFilePath)
+									ImGui::Text("%s:%d", event.pFilePath, event.LineNumber);
 								ImGui::EndTooltip();
 							}
 						}
 					}
-				});
+				}
 
-			// Add vertical line to end track
-			cursor.y += trackDepth * style.BarHeight;
-			pDraw->AddLine(ImVec2(timelineRect.Min.x, cursor.y), ImVec2(timelineRect.Max.x, cursor.y), ImColor(style.BGTextColor));
+				// Add vertical line to end track
+				cursor.y += trackDepth * style.BarHeight;
+				pDraw->AddLine(ImVec2(timelineRect.Min.x, cursor.y), ImVec2(timelineRect.Max.x, cursor.y), ImColor(style.BGTextColor));
+			}
 		}
-
 
 		// Split between GPU and CPU tracks
 		pDraw->AddLine(ImVec2(timelineRect.Min.x, cursor.y), ImVec2(timelineRect.Max.x, cursor.y), ImColor(style.BGTextColor), 4);
@@ -392,42 +387,37 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 			uint32 trackDepth = 1;
 			cursor.y += style.BarHeight;
 
-			// Add a bar in the right place for each sample region
+			// Add a bar in the right place for each event
 			/*
 				|[=============]			|
 				|	[======]				|
 			*/
-			gCPUProfiler.ForEachFrame([&](uint32 frameIndex, const CPUProfiler::SampleHistory& data)
+			for (uint32 frameIndex = cpuRange.Begin; frameIndex < cpuRange.End; ++frameIndex)
+			{
+				Span<const CPUProfiler::EventFrame::Event> events = gCPUProfiler.GetEventsForThread(thread, frameIndex);
+				for (const CPUProfiler::EventFrame::Event& event : events)
 				{
-					uint32 numRegions = data.CurrentIndex;
-					for (uint32 regionIndex = 0; regionIndex < numRegions; ++regionIndex)
+					// Skip events above the max depth
+					if (event.Depth >= maxDepth)
+						continue;
+
+					trackDepth = ImMax(trackDepth, (uint32)event.Depth + 1);
+
+					bool hovered;
+					DrawBar(ImGui::GetID(&event), event.TicksBegin, event.TicksEnd, event.Depth, event.pName, &hovered);
+					if (hovered)
 					{
-						const CPUProfiler::SampleRegion& region = data.Regions[regionIndex];
-
-						// Only process regions for the current thread
-						if (region.ThreadIndex != threadIndex)
-							continue;
-						// Skip regions above the max depth
-						if (region.Depth >= maxDepth)
-							continue;
-
-						trackDepth = ImMax(trackDepth, (uint32)region.Depth + 1);
-
-						bool hovered;
-						DrawBar(ImGui::GetID(&region), region.BeginTicks, region.EndTicks, region.Depth, region.pName, &hovered);
-						if (hovered)
+						if (ImGui::BeginTooltip())
 						{
-							if (ImGui::BeginTooltip())
-							{
-								ImGui::Text("%s | %.3f ms", region.pName, TicksToMs * (float)(region.EndTicks - region.BeginTicks));
-								ImGui::Text("Frame %d", frameIndex);
-								if (region.pFilePath)
-									ImGui::Text("%s:%d", region.pFilePath, region.LineNumber);
-								ImGui::EndTooltip();
-							}
+							ImGui::Text("%s | %.3f ms", event.pName, TicksToMs * (float)(event.TicksEnd - event.TicksBegin));
+							ImGui::Text("Frame %d", frameIndex);
+							if (event.pFilePath)
+								ImGui::Text("%s:%d", event.pFilePath, event.LineNumber);
+							ImGui::EndTooltip();
 						}
 					}
-				});
+				}
+			}
 
 			// Add vertical line to end track
 			cursor.y += trackDepth * style.BarHeight;
@@ -459,7 +449,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				else
 				{
 					// Distance between mouse cursor and measuring start
-					float distance = (float)fabs(ImGui::GetMousePos().x - context.RangeSelectionStart);
+					float distance = fabs(ImGui::GetMousePos().x - context.RangeSelectionStart);
 
 					// Fade in based on distance
 					float opacity = ImClamp(distance / 30.0f, 0.0f, 1.0f);
@@ -567,7 +557,7 @@ void DrawProfilerHUD()
 
 	ImGui::Dummy(ImVec2(30, 0));
 	ImGui::SameLine();
-
+	
 	ImGui::Text("Filter");
 	ImGui::SetNextItemWidth(150);
 	ImGui::SameLine();
@@ -587,9 +577,11 @@ void DrawProfilerHUD()
 
 	if (ImGui::IsKeyPressed(ImGuiKey_Space))
 	{
-		gCPUProfiler.SetPaused(!gCPUProfiler.IsPaused());
-		gGPUProfiler.SetPaused(!gGPUProfiler.IsPaused());
+		context.IsPaused = !context.IsPaused;
 	}
+
+	gCPUProfiler.SetPaused(context.IsPaused);
+	gGPUProfiler.SetPaused(context.IsPaused);
 
 	DrawProfilerTimeline(ImVec2(0, 0));
 }

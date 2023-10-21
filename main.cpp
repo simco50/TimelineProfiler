@@ -13,7 +13,7 @@
 #include <dxgi1_4.h>
 #include <tchar.h>
 
-#include "FooProfiler.h"
+#include "Profiler.h"
 #include "IconsFontAwesome4.h"
 
 #ifdef _DEBUG
@@ -138,7 +138,9 @@ int main(int, char**)
         io.Fonts->AddFontFromFileTTF(FONT_ICON_FILE_NAME_FA, 15.0f, &fontConfig, icon_ranges);
     }
 
-    gGPUProfiler.Initialize(g_pd3dDevice, &g_pd3dCommandQueue, 1);
+    gCPUProfiler.Initialize(5, 1024);
+    Span<ID3D12CommandQueue*> queues(&g_pd3dCommandQueue, 1);
+    gGPUProfiler.Initialize(g_pd3dDevice, queues, 10, 3, 1024, 32);
 
     // Our state
     bool show_demo_window = true;
@@ -233,7 +235,7 @@ int main(int, char**)
         g_pd3dCommandList->Reset(frameCtx->CommandAllocator, nullptr);
 
         {
-            PROFILE_GPU_SCOPE("Render", g_pd3dCommandList);
+            PROFILE_GPU_SCOPE(g_pd3dCommandList, "Render");
             g_pd3dCommandList->ResourceBarrier(1, &barrier);
 
             // Render Dear ImGui graphics
@@ -249,6 +251,8 @@ int main(int, char**)
         }
         g_pd3dCommandList->Close();
 
+        Span<ID3D12CommandList*> cmdlists((ID3D12CommandList**)&g_pd3dCommandList, 1);
+        PROFILE_EXECUTE_COMMANDLISTS(g_pd3dCommandQueue, cmdlists);
         g_pd3dCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&g_pd3dCommandList);
 
         // Update and Render additional Platform Windows
@@ -275,6 +279,7 @@ int main(int, char**)
     ImGui::DestroyContext();
 
     gGPUProfiler.Shutdown();
+    gCPUProfiler.Shutdown();
 
     CleanupDeviceD3D();
     ::DestroyWindow(hwnd);
