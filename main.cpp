@@ -140,7 +140,7 @@ int main(int, char**)
 
     gCPUProfiler.Initialize(5, 1024);
     Span<ID3D12CommandQueue*> queues(&g_pd3dCommandQueue, 1);
-    gGPUProfiler.Initialize(g_pd3dDevice, queues, 10, 3, 1024, 32);
+    gGPUProfiler.Initialize(g_pd3dDevice, queues, 5, 3, 1024, 128, 32);
 
     // Our state
     bool show_demo_window = true;
