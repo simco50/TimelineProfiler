@@ -183,7 +183,7 @@ int main(int, char**)
 
     gCPUProfiler.Initialize(5);
     Span<ID3D12CommandQueue*> queues(&g_pd3dCommandQueue, 1);
-    gGPUProfiler.Initialize(g_pd3dDevice, queues, 5, 3, 1024, 128, 32);
+    gGPUProfiler.Initialize(g_pd3dDevice, queues, 5, 3, 1024, 128);
 
     // Before 1.91.6: our signature was using a single descriptor. From 1.92, specifying SrvDescriptorAllocFn/SrvDescriptorFreeFn will be required to benefit from new features.
     //ImGui_ImplDX12_Init(g_pd3dDevice, APP_NUM_FRAMES_IN_FLIGHT, DXGI_FORMAT_R8G8B8A8_UNORM, g_pd3dSrvDescHeap, g_pd3dSrvDescHeap->GetCPUDescriptorHandleForHeapStart(), g_pd3dSrvDescHeap->GetGPUDescriptorHandleForHeapStart());
@@ -358,6 +358,9 @@ int main(int, char**)
     ImGui_ImplDX12_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
+
+    gCPUProfiler.Shutdown();
+	gGPUProfiler.Shutdown();
 
     CleanupDeviceD3D();
     ::DestroyWindow(hwnd);

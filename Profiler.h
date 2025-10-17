@@ -286,8 +286,7 @@ public:
 		uint32					  sampleHistory,
 		uint32					  frameLatency,
 		uint32					  maxNumEvents,
-		uint32					  maxNumCopyEvents,
-		uint32					  maxNumActiveCommandLists);
+		uint32					  maxNumCopyEvents);
 
 	void Shutdown();
 
@@ -410,7 +409,9 @@ private:
 			static constexpr uint32 InvalidEventFlag = 0xFFFF;
 		};
 		static_assert(sizeof(Query) == sizeof(uint32));
-		Array<Query> Queries;
+		GPUProfiler*	   pProfiler	= nullptr;
+		ID3D12CommandList* pCommandList = nullptr;
+		Array<Query>	   Queries;
 	};
 
 	CommandListState* GetState(ID3D12CommandList* pCmd, bool createIfNotFound);
@@ -439,8 +440,7 @@ private:
 	std::mutex				  m_QueryRangeLock;
 
 	WinHandle							m_CommandListMapLock{}; ///< Lock for accessing commandlist state hashmap
-	HashMap<ID3D12CommandList*, uint32> m_CommandListMap;		///< Maps commandlist to index
-	Array<CommandListState>				m_CommandListData;		///< Contains state for all commandlists
+	HashMap<ID3D12CommandList*, CommandListState*> m_CommandListMap;		///< Maps commandlist to index
 
 	static constexpr uint32 MAX_EVENT_DEPTH = 32;
 	using ActiveEventStack					= FixedStack<CommandListState::Query, MAX_EVENT_DEPTH>;

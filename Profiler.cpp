@@ -37,8 +37,7 @@ void GPUProfiler::Initialize(
 	uint32					  sampleHistory,
 	uint32					  frameLatency,
 	uint32					  maxNumEvents,
-	uint32					  maxNumCopyEvents,
-	uint32					  maxNumActiveCommandLists)
+	uint32					  maxNumCopyEvents)
 {
 	// Event indices are 16 bit, so max 2^16 events
 	gAssert(maxNumEvents + maxNumCopyEvents < (1u << 16u));
@@ -47,7 +46,6 @@ void GPUProfiler::Initialize(
 	m_EventHistorySize = sampleHistory;
 
 	InitializeSRWLock((PSRWLOCK)&m_CommandListMapLock);
-	m_CommandListData.resize(maxNumActiveCommandLists);
 
 	m_QueueEventStack.resize(queues.size());
 	for (uint32 queueIndex = 0; queueIndex < queues.size(); ++queueIndex)
@@ -58,6 +56,10 @@ void GPUProfiler::Initialize(
 		m_QueueIndexMap[pQueue] = (uint32)m_Queues.size();
 		QueueInfo& queueInfo	= m_Queues.emplace_back();
 		uint32	   size			= ARRAYSIZE(queueInfo.Name);
+
+		GUID WKPDID_D3DDebugObjectName = { 0x429b8c22, 0x9188, 0x4b0c, 0x87, 0x42, 0xac, 0xb0, 0xbf, 0x85, 0xc2, 0x00 };
+
+
 		if (FAILED(pQueue->GetPrivateData(WKPDID_D3DDebugObjectName, &size, queueInfo.Name)))
 		{
 			switch (desc.Type)
@@ -117,6 +119,10 @@ void GPUProfiler::Shutdown()
 
 	for (QueryHeap& heap : m_QueryHeaps)
 		heap.Shutdown();
+
+	for (auto& commandListState : m_CommandListMap)
+		delete commandListState.second;
+	m_CommandListMap.clear();
 }
 
 void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName, uint32 color, const char* pFilePath, uint32 lineNumber)
@@ -133,8 +139,8 @@ void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName,
 	ProfilerEventData& eventData = GetSampleFrame();
 
 	// Register a query on the commandlist
-	CommandListState&		 state		  = *GetState(pCmd, true);
-	CommandListState::Query& cmdListQuery = state.Queries.emplace_back();
+	CommandListState&		 pState		  = *GetState(pCmd, true);
+	CommandListState::Query& cmdListQuery = pState.Queries.emplace_back();
 
 	// Allocate a query range. This stores a begin/end query index pair. (Also event index)
 	uint32 eventIndex = m_EventIndex.fetch_add(1);
@@ -165,8 +171,8 @@ void GPUProfiler::EndEvent(ID3D12GraphicsCommandList* pCmd)
 		return;
 
 	// Record a timestamp query and assign to the commandlist
-	CommandListState&		 state = *GetState(pCmd, true);
-	CommandListState::Query& query = state.Queries.emplace_back();
+	CommandListState&		 pState = *GetState(pCmd, true);
+	CommandListState::Query& query = pState.Queries.emplace_back();
 	query.QueryIndex			   = GetHeap(pCmd->GetType()).RecordQuery(pCmd);
 	query.EventIndex			   = CommandListState::Query::EndEventFlag; // Range index to indicate this is an 'End' query
 }
@@ -249,10 +255,9 @@ void GPUProfiler::Tick()
 		return;
 
 #if ENABLE_ASSERTS
-	for (const CommandListState& state : m_CommandListData)
-		gAssert(state.Queries.empty(), "The Queries inside the commandlist is not empty. This is because ExecuteCommandLists was not called with this commandlist.");
+	for (const CommandListState& pState : m_CommandListData)
+		gAssert(pState.Queries.empty(), "The Queries inside the commandlist is not empty. This is because ExecuteCommandLists was not called with this commandlist.");
 #endif
-	m_CommandListMap.clear();
 
 	for (QueryHeap& heap : m_QueryHeaps)
 		heap.Resolve(m_FrameIndex);
@@ -342,24 +347,35 @@ GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bo
 	// See if it's already tracked
 	AcquireSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
 	auto   it	 = m_CommandListMap.find(pCmd);
-	uint32 index = it != m_CommandListMap.end() ? it->second : 0xFFFFFFFF;
+	CommandListState* pState = it != m_CommandListMap.end() ? it->second : nullptr;
 	ReleaseSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
 
-	if (index != 0xFFFFFFFF)
-		return &m_CommandListData[index];
-
-	if (createIfNotFound)
+	if (!pState && createIfNotFound)
 	{
 		// If not, register new commandlist
-		AcquireSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
-		index = (uint32)m_CommandListMap.size();
-		gAssert((uint32)index < m_CommandListData.size());
-		m_CommandListMap[pCmd] = index;
-		ReleaseSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
+		pState			  = new CommandListState;
+		pState->pProfiler = this;
 
-		return &m_CommandListData[index];
+		// Add callback for when commandlist is destroyed
+		// TODO: Pool CommandListStates in case ID3D12CommandLists are often recreated
+		ID3DDestructionNotifier* destruction_notifier = nullptr;
+		pCmd->QueryInterface(&destruction_notifier);
+		destruction_notifier->RegisterDestructionCallback([](void* pContext) {
+			GPUProfiler::CommandListState* pState = (GPUProfiler::CommandListState*)pContext;
+
+			AcquireSRWLockExclusive((PSRWLOCK)&pState->pProfiler->m_CommandListMapLock);
+			pState->pProfiler->m_CommandListMap.erase(pState->pCommandList);
+			ReleaseSRWLockExclusive((PSRWLOCK)&pState->pProfiler->m_CommandListMapLock);
+			
+			delete pState;
+
+		}, pState, nullptr);
+	
+		AcquireSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
+		m_CommandListMap[pCmd] = pState;
+		ReleaseSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
 	}
-	return nullptr;
+	return pState;
 }
 
 void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pResolveQueue, uint32 maxNumQueries, uint32 frameLatency)
@@ -619,9 +635,11 @@ void CPUProfiler::RegisterThread(const char* pName)
 	else
 	{
 		PWSTR pDescription = nullptr;
-		VERIFY_HR(::GetThreadDescription(GetCurrentThread(), &pDescription));
-		size_t converted = 0;
-		gVerify(wcstombs_s(&converted, data.Name, ARRAYSIZE(data.Name), pDescription, ARRAYSIZE(data.Name)), == 0);
+		if (SUCCEEDED(::GetThreadDescription(GetCurrentThread(), &pDescription)))
+		{
+			size_t converted = 0;
+			WideCharToMultiByte(CP_UTF8, 0, pDescription, (int)wcslen(pDescription), data.Name, ARRAYSIZE(data.Name), nullptr, nullptr);
+		}
 	}
 
 	data.ThreadID = GetCurrentThreadId();
