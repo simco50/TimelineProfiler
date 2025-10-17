@@ -18,7 +18,7 @@
 		auto r = (op);        \
 		gAssert(r expected);  \
 	} while (false)
-#define VERIFY_HR(op)				 assert(SUCCEEDED(op))
+#define VERIFY_HR(op)				 gVerify(op, == S_OK)
 #define gBoundCheck(val, minV, maxV) gAssert(val >= minV && val < maxV, "Value out of bounds")
 
 #define _STRINGIFY(a)	   #a
