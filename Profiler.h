@@ -10,9 +10,6 @@
 #include <unordered_map>
 #include <assert.h>
 
-#define NOMINMAX
-#include <d3d12.h>
-
 #define gAssert(op, ...) assert(op)
 #define gAssert(op, ...) assert(op)
 #define gVerify(op, expected) do { auto r = (op); gAssert(r expected); } while(false)
@@ -37,6 +34,15 @@ using StaticArray = std::array<T, Size>;
 template<typename K, typename V>
 using HashMap = std::unordered_map<K, V>;
 
+struct ID3D12CommandList;
+struct ID3D12GraphicsCommandList;
+struct ID3D12CommandQueue;
+struct ID3D12Device;
+struct ID3D12Resource;
+struct ID3D12CommandAllocator;
+struct ID3D12QueryHeap;
+struct ID3D12Fence;
+using WinHandle = void*;
 
 struct URange
 {
@@ -135,7 +141,7 @@ public:
 	T& Push()
 	{
 		Depth++;
-		gAssert(Depth < ARRAYSIZE(StackData));
+		gAssert(Depth < N);
 		return StackData[Depth - 1];
 	}
 
@@ -346,6 +352,8 @@ private:
 		uint32			RecordQuery(ID3D12GraphicsCommandList* pCmd);
 		uint32			Resolve(uint32 frameIndex);
 		void			Reset(uint32 frameIndex);
+		bool			IsFrameComplete(uint64 frameIndex);
+		void			WaitFrame(uint32 frameIndex);
 
 		Span<const uint64> GetQueryData(uint32 frameIndex) const
 		{
@@ -354,30 +362,6 @@ private:
 
 			uint32 frameBit = frameIndex % m_FrameLatency;
 			return m_ReadbackData.subspan(frameBit * m_MaxNumQueries, m_MaxNumQueries);
-		}
-
-		bool IsFrameComplete(uint64 frameIndex)
-		{
-			if (!IsInitialized())
-				return true;
-
-			uint64 fenceValue = frameIndex;
-			if (fenceValue <= m_LastCompletedFence)
-				return true;
-			m_LastCompletedFence = std::max(m_pResolveFence->GetCompletedValue(), m_LastCompletedFence);
-			return fenceValue <= m_LastCompletedFence;
-		}
-
-		void WaitFrame(uint32 frameIndex)
-		{
-			if (!IsInitialized())
-				return;
-
-			if (!IsFrameComplete(frameIndex))
-			{
-				m_pResolveFence->SetEventOnCompletion(frameIndex, m_ResolveWaitHandle);
-				WaitForSingleObject(m_ResolveWaitHandle, INFINITE);
-			}
 		}
 
 		bool				IsInitialized() const	{ return m_pQueryHeap != nullptr; }
@@ -394,7 +378,7 @@ private:
 		Span<const uint64>						m_ReadbackData			= {};		///< Mapped readback resource pointer
 		ID3D12CommandQueue*						m_pResolveQueue			= nullptr;	///< Queue to resolve queries on
 		ID3D12Fence*							m_pResolveFence			= nullptr;	///< Fence for tracking when queries are finished resolving
-		HANDLE									m_ResolveWaitHandle		= nullptr;	///< Handle to allow waiting for resolve to finish
+		WinHandle								m_ResolveWaitHandle		= nullptr;	///< Handle to allow waiting for resolve to finish
 		uint64									m_LastCompletedFence	= 0;		///< Last finish fence value
 	};
 
@@ -441,7 +425,7 @@ private:
 		return queue.CPUCalibrationTicks + (gpuTicks - queue.GPUCalibrationTicks) * m_CPUTickFrequency / queue.GPUFrequency;
 	}
 
-	QueryHeap& GetHeap(D3D12_COMMAND_LIST_TYPE type) { return type == D3D12_COMMAND_LIST_TYPE_COPY ? m_QueryHeaps[1] : m_QueryHeaps[0]; }
+	QueryHeap& GetHeap(bool isCopyQueue) { return isCopyQueue ? m_QueryHeaps[1] : m_QueryHeaps[0]; }
 
 	bool									m_IsInitialized		= false;
 	bool									m_IsPaused			= false;
@@ -458,7 +442,7 @@ private:
 	uint64									m_CPUTickFrequency = 0;			///< Tick frequency of CPU for QPC
 	std::mutex								m_QueryRangeLock;
 
-	SRWLOCK									m_CommandListMapLock{};			///< Lock for accessing commandlist state hashmap
+	WinHandle								m_CommandListMapLock{};			///< Lock for accessing commandlist state hashmap
 	HashMap<ID3D12CommandList*, uint32>		m_CommandListMap;				///< Maps commandlist to index
 	Array<CommandListState>					m_CommandListData;				///< Contains state for all commandlists
 

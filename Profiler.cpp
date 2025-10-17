@@ -1,6 +1,7 @@
 
 #define NOMINMAX
 #include "Profiler.h"
+#include <d3d12.h>
 
 #if WITH_PROFILING
 
@@ -47,7 +48,7 @@ void GPUProfiler::Initialize(
 	m_FrameLatency		= frameLatency;
 	m_EventHistorySize	= sampleHistory;
 
-	InitializeSRWLock(&m_CommandListMapLock);
+	InitializeSRWLock((PSRWLOCK)&m_CommandListMapLock);
 	m_CommandListData.resize(maxNumActiveCommandLists);
 
 	m_QueueEventStack.resize(queues.size());
@@ -331,10 +332,10 @@ void GPUProfiler::ExecuteCommandLists(ID3D12CommandQueue* pQueue, Span<ID3D12Com
 GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bool createIfNotFound)
 {
 	// See if it's already tracked
-	AcquireSRWLockShared(&m_CommandListMapLock);
+	AcquireSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
 	auto it = m_CommandListMap.find(pCmd);
 	uint32 index = it != m_CommandListMap.end() ? it->second : 0xFFFFFFFF;
-	ReleaseSRWLockShared(&m_CommandListMapLock);
+	ReleaseSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
 
 	if (index != 0xFFFFFFFF)
 		return &m_CommandListData[index];
@@ -342,11 +343,11 @@ GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bo
 	if (createIfNotFound)
 	{
 		// If not, register new commandlist
-		AcquireSRWLockExclusive(&m_CommandListMapLock);
+		AcquireSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
 		index = (uint32)m_CommandListMap.size();
 		gAssert((uint32)index < m_CommandListData.size());
 		m_CommandListMap[pCmd] = index;
-		ReleaseSRWLockExclusive(&m_CommandListMapLock);
+		ReleaseSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
 
 		return &m_CommandListData[index];
 	}
@@ -456,6 +457,32 @@ void GPUProfiler::QueryHeap::Reset(uint32 frameIndex)
 	m_pCommandList->Reset(pAllocator, nullptr);
 }
 
+
+
+bool GPUProfiler::QueryHeap::IsFrameComplete(uint64 frameIndex)
+{
+	if (!IsInitialized())
+		return true;
+
+	uint64 fenceValue = frameIndex;
+	if (fenceValue <= m_LastCompletedFence)
+		return true;
+	m_LastCompletedFence = std::max(m_pResolveFence->GetCompletedValue(), m_LastCompletedFence);
+	return fenceValue <= m_LastCompletedFence;
+}
+
+
+void GPUProfiler::QueryHeap::WaitFrame(uint32 frameIndex)
+{
+	if (!IsInitialized())
+		return;
+
+	if (!IsFrameComplete(frameIndex))
+	{
+		m_pResolveFence->SetEventOnCompletion(frameIndex, m_ResolveWaitHandle);
+		WaitForSingleObject(m_ResolveWaitHandle, INFINITE);
+	}
+}
 
 
 //-----------------------------------------------------------------------------

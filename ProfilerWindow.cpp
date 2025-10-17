@@ -7,6 +7,8 @@
 #include <imgui_internal.h>
 #include <fstream>
 
+#define NOMINMAX
+#include <windows.h>
 
 class StringHash
 {
