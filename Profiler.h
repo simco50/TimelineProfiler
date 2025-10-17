@@ -1,37 +1,42 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <assert.h>
 #include <atomic>
-#include <vector>
 #include <cinttypes>
 #include <mutex>
-#include <array>
 #include <span>
 #include <unordered_map>
-#include <assert.h>
+#include <vector>
 
 #define gAssert(op, ...) assert(op)
 #define gAssert(op, ...) assert(op)
-#define gVerify(op, expected) do { auto r = (op); gAssert(r expected); } while(false)
-#define VERIFY_HR(op) assert(SUCCEEDED(op))
+#define gVerify(op, expected) \
+	do                        \
+	{                         \
+		auto r = (op);        \
+		gAssert(r expected);  \
+	} while (false)
+#define VERIFY_HR(op)				 assert(SUCCEEDED(op))
 #define gBoundCheck(val, minV, maxV) gAssert(val >= minV && val < maxV, "Value out of bounds")
 
-#define _STRINGIFY(a) #a
-#define STRINGIFY(a) _STRINGIFY(a)
-#define CONCAT_IMPL( x, y ) x##y
-#define MACRO_CONCAT( x, y ) CONCAT_IMPL( x, y )
+#define _STRINGIFY(a)	   #a
+#define STRINGIFY(a)	   _STRINGIFY(a)
+#define CONCAT_IMPL(x, y)  x##y
+#define MACRO_CONCAT(x, y) CONCAT_IMPL(x, y)
 
 using uint64 = uint64_t;
 using uint32 = uint32_t;
 using uint16 = uint16_t;
-using uint8 = uint8_t;
-template<typename T>
+using uint8	 = uint8_t;
+template <typename T>
 using Span = std::span<T>;
-template<typename T>
+template <typename T>
 using Array = std::vector<T>;
-template<typename T, size_t Size>
+template <typename T, size_t Size>
 using StaticArray = std::array<T, Size>;
-template<typename K, typename V>
+template <typename K, typename V>
 using HashMap = std::unordered_map<K, V>;
 
 struct ID3D12CommandList;
@@ -51,7 +56,6 @@ struct URange
 	uint32 GetLength() const { return End - Begin; }
 };
 
-
 #ifndef WITH_PROFILING
 #define WITH_PROFILING 1
 #endif
@@ -69,11 +73,13 @@ struct URange
 
 /// Usage:
 //		PROFILE_FRAME()
-#define PROFILE_FRAME() gCPUProfiler.Tick(); gGPUProfiler.Tick()
+#define PROFILE_FRAME()  \
+	gCPUProfiler.Tick(); \
+	gGPUProfiler.Tick()
 
 /// Usage:
 ///		PROFILE_EXECUTE_COMMANDLISTS(ID3D12CommandQueue* pQueue, Span<ID3D12CommandLists*> commandLists)
-#define PROFILE_EXECUTE_COMMANDLISTS(queue, cmdlists)	gGPUProfiler.ExecuteCommandLists(queue, cmdlists)
+#define PROFILE_EXECUTE_COMMANDLISTS(queue, cmdlists) gGPUProfiler.ExecuteCommandLists(queue, cmdlists)
 
 /*
 	CPU Profiling
@@ -82,15 +88,15 @@ struct URange
 // Usage:
 //		PROFILE_CPU_SCOPE(const char* pName)
 //		PROFILE_CPU_SCOPE()
-#define PROFILE_CPU_SCOPE(...)							CPUProfileScope MACRO_CONCAT(profiler, __COUNTER__)(__FUNCTION__, __FILE__, __LINE__, __VA_ARGS__)
+#define PROFILE_CPU_SCOPE(...) CPUProfileScope MACRO_CONCAT(profiler, __COUNTER__)(__FUNCTION__, __FILE__, __LINE__, __VA_ARGS__)
 
 // Usage:
 //		PROFILE_CPU_BEGIN(const char* pName)
 //		PROFILE_CPU_BEGIN()
-#define PROFILE_CPU_BEGIN(...)							gCPUProfiler.BeginEvent(__VA_ARGS__)
+#define PROFILE_CPU_BEGIN(...) gCPUProfiler.BeginEvent(__VA_ARGS__)
 // Usage:
 //		PROFILE_CPU_END()
-#define PROFILE_CPU_END()								gCPUProfiler.EndEvent()
+#define PROFILE_CPU_END() gCPUProfiler.EndEvent()
 
 /*
 	GPU Profiling
@@ -99,16 +105,15 @@ struct URange
 // Usage:
 //		PROFILE_GPU_SCOPE(ID3D12GraphicsCommandList* pCommandList, const char* pName)
 //		PROFILE_GPU_SCOPE(ID3D12GraphicsCommandList* pCommandList)
-#define PROFILE_GPU_SCOPE(cmdlist, ...)					GPUProfileScope MACRO_CONCAT(gpu_profiler, __COUNTER__)(__FUNCTION__, __FILE__, __LINE__, cmdlist, __VA_ARGS__)
+#define PROFILE_GPU_SCOPE(cmdlist, ...) GPUProfileScope MACRO_CONCAT(gpu_profiler, __COUNTER__)(__FUNCTION__, __FILE__, __LINE__, cmdlist, __VA_ARGS__)
 
 // Usage:
 //		PROFILE_GPU_BEGIN(const char* pName, ID3D12GraphicsCommandList* pCommandList)
-#define PROFILE_GPU_BEGIN(cmdlist, name)				gGPUProfiler.BeginEvent(cmdlist, name, __FILE__, __LINE__)
+#define PROFILE_GPU_BEGIN(cmdlist, name) gGPUProfiler.BeginEvent(cmdlist, name, __FILE__, __LINE__)
 
 // Usage:
 //		PROFILE_GPU_END(ID3D12GraphicsCommandList* pCommandList)
-#define PROFILE_GPU_END(cmdlist)						gGPUProfiler.EndEvent(cmdlist)
-
+#define PROFILE_GPU_END(cmdlist) gGPUProfiler.EndEvent(cmdlist)
 
 #else
 
@@ -126,8 +131,7 @@ struct URange
 
 #endif
 
-
-template<typename T, uint32 N>
+template <typename T, uint32 N>
 struct FixedStack
 {
 public:
@@ -155,10 +159,8 @@ public:
 
 private:
 	uint32 Depth = 0;
-	T StackData[N]{};
+	T	   StackData[N]{};
 };
-
-
 
 // Simple Linear Allocator
 class LinearAllocator
@@ -174,7 +176,7 @@ public:
 		delete[] m_pData;
 	}
 
-	LinearAllocator(LinearAllocator&) = delete;
+	LinearAllocator(LinearAllocator&)			 = delete;
 	LinearAllocator& operator=(LinearAllocator&) = delete;
 
 	void Reset()
@@ -182,11 +184,11 @@ public:
 		m_Offset = 0;
 	}
 
-	template<typename T, typename... Args>
+	template <typename T, typename... Args>
 	T* Allocate(Args... args)
 	{
-		void* pData = Allocate(sizeof(T));
-		T* pValue = new (pData) T(std::forward<Args>(args)...);
+		void* pData	 = Allocate(sizeof(T));
+		T*	  pValue = new (pData) T(std::forward<Args>(args)...);
 		return pValue;
 	}
 
@@ -199,41 +201,37 @@ public:
 
 	const char* String(const char* pStr)
 	{
-		uint32 len = (uint32)strlen(pStr) + 1;
-		char* pData = (char*)Allocate(len);
+		uint32 len	 = (uint32)strlen(pStr) + 1;
+		char*  pData = (char*)Allocate(len);
 		strcpy_s(pData, len, pStr);
 		return pData;
 	}
 
 private:
-	char* m_pData;
-	uint32 m_Size;
+	char*				m_pData;
+	uint32				m_Size;
 	std::atomic<uint32> m_Offset;
 };
 
 void DrawProfilerHUD();
 
-
-
 // Single event
 struct ProfilerEvent
 {
-	const char* pName				= nullptr;	///< Name of event
-	const char* pFilePath			= nullptr;	///< File path of location where event was started
-	uint32		Color		: 24	= 0xFFFFFF;	///< Color
-	uint32		Depth		: 8		= 0;		///< Stack depth of event
-	uint32		LineNumber	: 18	= 0;		///< Line number of file where event was started
-	uint32		ThreadIndex : 8		= 0;		///< Index of thread this event is started on
-	uint32		QueueIndex	: 6		= 0;		///< GPU Queue Index (GPU-specific)
+	const char* pName			 = nullptr;	 ///< Name of event
+	const char* pFilePath		 = nullptr;	 ///< File path of location where event was started
+	uint32		Color		: 24 = 0xFFFFFF; ///< Color
+	uint32		Depth		: 8	 = 0;		 ///< Stack depth of event
+	uint32		LineNumber	: 18 = 0;		 ///< Line number of file where event was started
+	uint32		ThreadIndex : 8	 = 0;		 ///< Index of thread this event is started on
+	uint32		QueueIndex	: 6	 = 0;		 ///< GPU Queue Index (GPU-specific)
 
-	uint64		TicksBegin			= 0;		///< Begin CPU ticks
-	uint64		TicksEnd			= 0;		///< End CPU ticks
+	uint64 TicksBegin = 0; ///< Begin CPU ticks
+	uint64 TicksEnd	  = 0; ///< End CPU ticks
 
-	bool	IsValid() const		{ return TicksBegin != 0 && TicksEnd != 0; }
-	uint32	GetColor() const	{ return Color | (0xFF << 24); }
+	bool   IsValid() const { return TicksBegin != 0 && TicksEnd != 0; }
+	uint32 GetColor() const { return Color | (0xFF << 24); }
 };
-
-
 
 // Data for a single frame of profiling events
 class ProfilerEventData
@@ -241,10 +239,11 @@ class ProfilerEventData
 public:
 	ProfilerEventData()
 		: Allocator(1 << 16)
-	{}
+	{
+	}
 
-	Span<const ProfilerEvent> GetEvents() const						{ return Span<const ProfilerEvent>(Events.data(), NumEvents); }
-	Span<const ProfilerEvent> GetEvents(uint32 trackIndex) const	{ return trackIndex < EventOffsetAndCountPerTrack.size() && EventOffsetAndCountPerTrack[trackIndex].Size > 0 ? Span<const ProfilerEvent>(&Events[EventOffsetAndCountPerTrack[trackIndex].Offset], EventOffsetAndCountPerTrack[trackIndex].Size) : Span<const ProfilerEvent>(); }
+	Span<const ProfilerEvent> GetEvents() const { return Span<const ProfilerEvent>(Events.data(), NumEvents); }
+	Span<const ProfilerEvent> GetEvents(uint32 trackIndex) const { return trackIndex < EventOffsetAndCountPerTrack.size() && EventOffsetAndCountPerTrack[trackIndex].Size > 0 ? Span<const ProfilerEvent>(&Events[EventOffsetAndCountPerTrack[trackIndex].Offset], EventOffsetAndCountPerTrack[trackIndex].Size) : Span<const ProfilerEvent>(); }
 
 private:
 	friend class CPUProfiler;
@@ -256,12 +255,11 @@ private:
 		uint32 Size;
 	};
 
-	LinearAllocator						Allocator;						///< Scratch allocator for frame
-	Array<OffsetAndSize>				EventOffsetAndCountPerTrack;	///< Span of events for each track
-	Array<ProfilerEvent>				Events;							///< Event storage for frame
-	uint32								NumEvents = 0;					///< Total number of recorded events
+	LinearAllocator		 Allocator;					  ///< Scratch allocator for frame
+	Array<OffsetAndSize> EventOffsetAndCountPerTrack; ///< Span of events for each track
+	Array<ProfilerEvent> Events;					  ///< Event storage for frame
+	uint32				 NumEvents = 0;				  ///< Total number of recorded events
 };
-
 
 //-----------------------------------------------------------------------------
 // [SECTION] GPU Profiler
@@ -271,27 +269,25 @@ extern class GPUProfiler gGPUProfiler;
 
 struct GPUProfilerCallbacks
 {
-	using EventBeginFn	= void(*)(const char* /*pName*/, ID3D12GraphicsCommandList* /*CommandList*/, void* /*pUserData*/);
-	using EventEndFn	= void(*)(ID3D12GraphicsCommandList* /*CommandList*/, void* /*pUserData*/);
+	using EventBeginFn = void (*)(const char* /*pName*/, ID3D12GraphicsCommandList* /*CommandList*/, void* /*pUserData*/);
+	using EventEndFn   = void (*)(ID3D12GraphicsCommandList* /*CommandList*/, void* /*pUserData*/);
 
-	EventBeginFn	OnEventBegin	= nullptr;
-	EventEndFn		OnEventEnd		= nullptr;
-	void*			pUserData		= nullptr;
+	EventBeginFn OnEventBegin = nullptr;
+	EventEndFn	 OnEventEnd	  = nullptr;
+	void*		 pUserData	  = nullptr;
 };
-
-
 
 class GPUProfiler
 {
 public:
 	void Initialize(
-		ID3D12Device*				pDevice,
-		Span<ID3D12CommandQueue*>	queues,
-		uint32						sampleHistory,
-		uint32						frameLatency,
-		uint32						maxNumEvents,
-		uint32						maxNumCopyEvents,
-		uint32						maxNumActiveCommandLists);
+		ID3D12Device*			  pDevice,
+		Span<ID3D12CommandQueue*> queues,
+		uint32					  sampleHistory,
+		uint32					  frameLatency,
+		uint32					  maxNumEvents,
+		uint32					  maxNumCopyEvents,
+		uint32					  maxNumActiveCommandLists);
 
 	void Shutdown();
 
@@ -316,20 +312,20 @@ public:
 	// Data of a single GPU queue. Allows converting GPU timestamps to CPU timestamps
 	struct QueueInfo
 	{
-		char					Name[128]				{};			///< Name of the queue
-		ID3D12CommandQueue*		pQueue					= nullptr;	///< The D3D queue object
-		uint64					GPUCalibrationTicks		= 0;		///< The number of GPU ticks when the calibration was done
-		uint64					CPUCalibrationTicks		= 0;		///< The number of CPU ticks when the calibration was done
-		uint64					GPUFrequency			= 0;		///< The GPU tick frequency
-		uint32					Index					= 0;		///< Index of queue
-		uint32					QueryHeapIndex			= 0;		///< Query Heap index (Copy vs. Other queues)
+		char				Name[128]{};				   ///< Name of the queue
+		ID3D12CommandQueue* pQueue				= nullptr; ///< The D3D queue object
+		uint64				GPUCalibrationTicks = 0;	   ///< The number of GPU ticks when the calibration was done
+		uint64				CPUCalibrationTicks = 0;	   ///< The number of CPU ticks when the calibration was done
+		uint64				GPUFrequency		= 0;	   ///< The GPU tick frequency
+		uint32				Index				= 0;	   ///< Index of queue
+		uint32				QueryHeapIndex		= 0;	   ///< Query Heap index (Copy vs. Other queues)
 	};
 
 	Span<const QueueInfo> GetQueues() const { return m_Queues; }
 
 	URange GetFrameRange() const
 	{
-		uint32 end = m_FrameToReadback;
+		uint32 end	 = m_FrameToReadback;
 		uint32 begin = m_FrameIndex < m_EventHistorySize ? 0 : m_FrameIndex - (uint32)m_EventHistorySize;
 		return URange(begin, end);
 	}
@@ -346,14 +342,14 @@ private:
 	struct QueryHeap
 	{
 	public:
-		void			Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pResolveQueue, uint32 maxNumQueries, uint32 frameLatency);
-		void			Shutdown();
+		void Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pResolveQueue, uint32 maxNumQueries, uint32 frameLatency);
+		void Shutdown();
 
-		uint32			RecordQuery(ID3D12GraphicsCommandList* pCmd);
-		uint32			Resolve(uint32 frameIndex);
-		void			Reset(uint32 frameIndex);
-		bool			IsFrameComplete(uint64 frameIndex);
-		void			WaitFrame(uint32 frameIndex);
+		uint32 RecordQuery(ID3D12GraphicsCommandList* pCmd);
+		uint32 Resolve(uint32 frameIndex);
+		void   Reset(uint32 frameIndex);
+		bool   IsFrameComplete(uint64 frameIndex);
+		void   WaitFrame(uint32 frameIndex);
 
 		Span<const uint64> GetQueryData(uint32 frameIndex) const
 		{
@@ -364,40 +360,40 @@ private:
 			return m_ReadbackData.subspan(frameBit * m_MaxNumQueries, m_MaxNumQueries);
 		}
 
-		bool				IsInitialized() const	{ return m_pQueryHeap != nullptr; }
-		ID3D12QueryHeap*	GetHeap() const			{ return m_pQueryHeap; }
+		bool			 IsInitialized() const { return m_pQueryHeap != nullptr; }
+		ID3D12QueryHeap* GetHeap() const { return m_pQueryHeap; }
 
 	private:
-		Array<ID3D12CommandAllocator*>			m_CommandAllocators;				///< CommandAlloctors to resolve queries. 1 per frame
-		uint32									m_MaxNumQueries			= 0;		///< Max number of event queries
-		uint32									m_FrameLatency			= 0;		///< Number of GPU frame latency
-		std::atomic<uint32>						m_QueryIndex			= 0;		///< Current index of queries
-		ID3D12GraphicsCommandList*				m_pCommandList			= nullptr;	///< CommandList to resolve queries
-		ID3D12QueryHeap*						m_pQueryHeap			= nullptr;	///< Heap containing MaxNumQueries * FrameLatency queries
-		ID3D12Resource*							m_pReadbackResource		= nullptr;	///< Readback resource storing resolved query dara
-		Span<const uint64>						m_ReadbackData			= {};		///< Mapped readback resource pointer
-		ID3D12CommandQueue*						m_pResolveQueue			= nullptr;	///< Queue to resolve queries on
-		ID3D12Fence*							m_pResolveFence			= nullptr;	///< Fence for tracking when queries are finished resolving
-		WinHandle								m_ResolveWaitHandle		= nullptr;	///< Handle to allow waiting for resolve to finish
-		uint64									m_LastCompletedFence	= 0;		///< Last finish fence value
+		Array<ID3D12CommandAllocator*> m_CommandAllocators;			   ///< CommandAlloctors to resolve queries. 1 per frame
+		uint32						   m_MaxNumQueries		= 0;	   ///< Max number of event queries
+		uint32						   m_FrameLatency		= 0;	   ///< Number of GPU frame latency
+		std::atomic<uint32>			   m_QueryIndex			= 0;	   ///< Current index of queries
+		ID3D12GraphicsCommandList*	   m_pCommandList		= nullptr; ///< CommandList to resolve queries
+		ID3D12QueryHeap*			   m_pQueryHeap			= nullptr; ///< Heap containing MaxNumQueries * FrameLatency queries
+		ID3D12Resource*				   m_pReadbackResource	= nullptr; ///< Readback resource storing resolved query dara
+		Span<const uint64>			   m_ReadbackData		= {};	   ///< Mapped readback resource pointer
+		ID3D12CommandQueue*			   m_pResolveQueue		= nullptr; ///< Queue to resolve queries on
+		ID3D12Fence*				   m_pResolveFence		= nullptr; ///< Fence for tracking when queries are finished resolving
+		WinHandle					   m_ResolveWaitHandle	= nullptr; ///< Handle to allow waiting for resolve to finish
+		uint64						   m_LastCompletedFence = 0;	   ///< Last finish fence value
 	};
 
-	const ProfilerEventData&	GetSampleFrame(uint32 frameIndex) const		{ return m_pEventData[frameIndex % m_EventHistorySize]; }
-	ProfilerEventData&			GetSampleFrame(uint32 frameIndex)			{ return m_pEventData[frameIndex % m_EventHistorySize]; }
-	ProfilerEventData&			GetSampleFrame()							{ return GetSampleFrame(m_FrameIndex); }
+	const ProfilerEventData& GetSampleFrame(uint32 frameIndex) const { return m_pEventData[frameIndex % m_EventHistorySize]; }
+	ProfilerEventData&		 GetSampleFrame(uint32 frameIndex) { return m_pEventData[frameIndex % m_EventHistorySize]; }
+	ProfilerEventData&		 GetSampleFrame() { return GetSampleFrame(m_FrameIndex); }
 
 	// Data for a single frame of GPU queries. One for each frame latency
 	struct QueryData
 	{
 		struct QueryPair
 		{
-			uint32 QueryIndexBegin	: 16 = 0xFFFF;
-			uint32 QueryIndexEnd	: 16 = 0xFFFF;
+			uint32 QueryIndexBegin : 16 = 0xFFFF;
+			uint32 QueryIndexEnd   : 16 = 0xFFFF;
 
 			bool IsValid() const { return QueryIndexBegin != 0xFFFF && QueryIndexEnd != 0xFFFF; }
 		};
 		static_assert(sizeof(QueryPair) == sizeof(uint32));
-		Array<QueryPair>	Pairs;
+		Array<QueryPair> Pairs;
 	};
 	QueryData& GetQueryData(uint32 frameIndex) { return m_pQueryData[frameIndex % m_FrameLatency]; }
 	QueryData& GetQueryData() { return GetQueryData(m_FrameIndex); }
@@ -407,11 +403,11 @@ private:
 	{
 		struct Query
 		{
-			uint32 QueryIndex : 16 = InvalidEventFlag;		///< The index into the query heap
-			uint32 EventIndex : 16 = InvalidEventFlag;		///< The ProfilerEvent index. 0xFFFE is it is an "EndEvent"
+			uint32 QueryIndex : 16 = InvalidEventFlag; ///< The index into the query heap
+			uint32 EventIndex : 16 = InvalidEventFlag; ///< The ProfilerEvent index. 0xFFFE is it is an "EndEvent"
 
-			static constexpr uint32 EndEventFlag		= 0xFFFE;
-			static constexpr uint32 InvalidEventFlag	= 0xFFFF;
+			static constexpr uint32 EndEventFlag	 = 0xFFFE;
+			static constexpr uint32 InvalidEventFlag = 0xFFFF;
 		};
 		static_assert(sizeof(Query) == sizeof(uint32));
 		Array<Query> Queries;
@@ -427,33 +423,32 @@ private:
 
 	QueryHeap& GetHeap(bool isCopyQueue) { return isCopyQueue ? m_QueryHeaps[1] : m_QueryHeaps[0]; }
 
-	bool									m_IsInitialized		= false;
-	bool									m_IsPaused			= false;
-	bool									m_PauseQueued		= false;
+	bool m_IsInitialized = false;
+	bool m_IsPaused		 = false;
+	bool m_PauseQueued	 = false;
 
-	ProfilerEventData*						m_pEventData		= nullptr;	///< Data containing all resulting events. 1 per frame history
-	uint32									m_EventHistorySize	= 0;		///< Number of frames to keep track of
-	std::atomic<uint32>						m_EventIndex		= 0;		///< Current event index
-	QueryData*								m_pQueryData		= nullptr;	///< Data containing all intermediate query event data. 1 per frame latency
-	uint32									m_FrameLatency		= 0;		///< Max number of in-flight GPU frames
-	uint32									m_FrameToReadback	= 0;		///< Next frame to readback from
-	uint32									m_FrameIndex		= 0;		///< Current frame index
-	StaticArray<QueryHeap, 2>				m_QueryHeaps;					///< GPU Query Heaps
-	uint64									m_CPUTickFrequency = 0;			///< Tick frequency of CPU for QPC
-	std::mutex								m_QueryRangeLock;
+	ProfilerEventData*		  m_pEventData		 = nullptr; ///< Data containing all resulting events. 1 per frame history
+	uint32					  m_EventHistorySize = 0;		///< Number of frames to keep track of
+	std::atomic<uint32>		  m_EventIndex		 = 0;		///< Current event index
+	QueryData*				  m_pQueryData		 = nullptr; ///< Data containing all intermediate query event data. 1 per frame latency
+	uint32					  m_FrameLatency	 = 0;		///< Max number of in-flight GPU frames
+	uint32					  m_FrameToReadback	 = 0;		///< Next frame to readback from
+	uint32					  m_FrameIndex		 = 0;		///< Current frame index
+	StaticArray<QueryHeap, 2> m_QueryHeaps;					///< GPU Query Heaps
+	uint64					  m_CPUTickFrequency = 0;		///< Tick frequency of CPU for QPC
+	std::mutex				  m_QueryRangeLock;
 
-	WinHandle								m_CommandListMapLock{};			///< Lock for accessing commandlist state hashmap
-	HashMap<ID3D12CommandList*, uint32>		m_CommandListMap;				///< Maps commandlist to index
-	Array<CommandListState>					m_CommandListData;				///< Contains state for all commandlists
+	WinHandle							m_CommandListMapLock{}; ///< Lock for accessing commandlist state hashmap
+	HashMap<ID3D12CommandList*, uint32> m_CommandListMap;		///< Maps commandlist to index
+	Array<CommandListState>				m_CommandListData;		///< Contains state for all commandlists
 
 	static constexpr uint32 MAX_EVENT_DEPTH = 32;
-	using ActiveEventStack = FixedStack<CommandListState::Query, MAX_EVENT_DEPTH>;
-	Array<ActiveEventStack>					m_QueueEventStack;				///< Stack of active events for each command queue
-	Array<QueueInfo>						m_Queues;						///< All registered queues
-	HashMap<ID3D12CommandQueue*, uint32>	m_QueueIndexMap;				///< Map from command queue to index
-	GPUProfilerCallbacks					m_EventCallback;
+	using ActiveEventStack					= FixedStack<CommandListState::Query, MAX_EVENT_DEPTH>;
+	Array<ActiveEventStack>				 m_QueueEventStack; ///< Stack of active events for each command queue
+	Array<QueueInfo>					 m_Queues;			///< All registered queues
+	HashMap<ID3D12CommandQueue*, uint32> m_QueueIndexMap;	///< Map from command queue to index
+	GPUProfilerCallbacks				 m_EventCallback;
 };
-
 
 // Helper RAII-style structure to push and pop a GPU sample event
 struct GPUProfileScope
@@ -475,13 +470,12 @@ struct GPUProfileScope
 		gGPUProfiler.EndEvent(pCmd);
 	}
 
-	GPUProfileScope(const GPUProfileScope&) = delete;
+	GPUProfileScope(const GPUProfileScope&)			   = delete;
 	GPUProfileScope& operator=(const GPUProfileScope&) = delete;
 
 private:
 	ID3D12GraphicsCommandList* pCmd;
 };
-
 
 //-----------------------------------------------------------------------------
 // [SECTION] CPU Profiler
@@ -492,12 +486,12 @@ extern class CPUProfiler gCPUProfiler;
 
 struct CPUProfilerCallbacks
 {
-	using EventBeginFn	= void(*)(const char* /*pName*/, void* /*pUserData*/);
-	using EventEndFn	= void(*)(void* /*pUserData*/);
+	using EventBeginFn = void (*)(const char* /*pName*/, void* /*pUserData*/);
+	using EventEndFn   = void (*)(void* /*pUserData*/);
 
-	EventBeginFn	OnEventBegin	= nullptr;
-	EventEndFn		OnEventEnd		= nullptr;
-	void*			pUserData		= nullptr;
+	EventBeginFn OnEventBegin = nullptr;
+	EventEndFn	 OnEventEnd	  = nullptr;
+	void*		 pUserData	  = nullptr;
 };
 
 // CPU Profiler
@@ -531,24 +525,24 @@ public:
 		static constexpr int MAX_STACK_DEPTH = 32;
 
 		FixedStack<uint32, MAX_STACK_DEPTH> EventStack;
-		uint32								ThreadIndex		= 0;
-		bool								IsInitialized	= false;
+		uint32								ThreadIndex	  = 0;
+		bool								IsInitialized = false;
 		Array<ProfilerEvent>				Events;
 	};
 
 	// Structure describing a registered thread
 	struct ThreadData
 	{
-		char		Name[128]	{};
-		uint32		ThreadID	= 0;
-		uint32		Index		= 0;
-		TLS*		pTLS		= nullptr;
+		char   Name[128]{};
+		uint32 ThreadID = 0;
+		uint32 Index	= 0;
+		TLS*   pTLS		= nullptr;
 	};
 
 	URange GetFrameRange() const
 	{
 		uint32 begin = m_FrameIndex - std::min(m_FrameIndex, m_HistorySize) + 1;
-		uint32 end = m_FrameIndex;
+		uint32 end	 = m_FrameIndex;
 		return URange(begin, end);
 	}
 
@@ -560,9 +554,9 @@ public:
 
 	Span<const ThreadData> GetThreads() const { return m_ThreadData; }
 
-	void SetEventCallback(const CPUProfilerCallbacks& inCallbacks)	{ m_EventCallback = inCallbacks; }
-	void SetPaused(bool paused)										{ m_QueuedPaused = paused; }
-	bool IsPaused() const											{ return m_Paused; }
+	void SetEventCallback(const CPUProfilerCallbacks& inCallbacks) { m_EventCallback = inCallbacks; }
+	void SetPaused(bool paused) { m_QueuedPaused = paused; }
+	bool IsPaused() const { return m_Paused; }
 
 private:
 	// Retrieve thread-local storage without initialization
@@ -582,23 +576,22 @@ private:
 	}
 
 	// Return the sample data of the current frame
-	ProfilerEventData& GetData()								{ return GetData(m_FrameIndex); }
-	ProfilerEventData& GetData(uint32 frameIndex)				{ return m_pEventData[frameIndex % m_HistorySize]; }
-	const ProfilerEventData& GetData(uint32 frameIndex)	const	{ return m_pEventData[frameIndex % m_HistorySize]; }
+	ProfilerEventData&		 GetData() { return GetData(m_FrameIndex); }
+	ProfilerEventData&		 GetData(uint32 frameIndex) { return m_pEventData[frameIndex % m_HistorySize]; }
+	const ProfilerEventData& GetData(uint32 frameIndex) const { return m_pEventData[frameIndex % m_HistorySize]; }
 
-	CPUProfilerCallbacks	m_EventCallback;
+	CPUProfilerCallbacks m_EventCallback;
 
-	std::mutex				m_ThreadDataLock;				// Mutex for accesing thread data
-	Array<ThreadData>		m_ThreadData;					// Data describing each registered thread
+	std::mutex		  m_ThreadDataLock; ///<Mutex for accesing thread data
+	Array<ThreadData> m_ThreadData;		///<Data describing each registered thread
 
-	ProfilerEventData*		m_pEventData		= nullptr;	// Per-frame data
-	uint32					m_HistorySize		= 0;		// History size
-	uint32					m_FrameIndex		= 0;		// The current frame index
-	bool					m_Paused			= false;	// The current pause state
-	bool					m_QueuedPaused		= false;	// The queued pause state
-	bool					m_IsInitialized		= false;
+	ProfilerEventData* m_pEventData	   = nullptr; ///<Per-frame data
+	uint32			   m_HistorySize   = 0;		  ///<History size
+	uint32			   m_FrameIndex	   = 0;		  ///<The current frame index
+	bool			   m_Paused		   = false;	  ///<The current pause state
+	bool			   m_QueuedPaused  = false;	  ///<The queued pause state
+	bool			   m_IsInitialized = false;
 };
-
 
 // Helper RAII-style structure to push and pop a CPU sample region
 struct CPUProfileScope
@@ -618,6 +611,6 @@ struct CPUProfileScope
 		gCPUProfiler.EndEvent();
 	}
 
-	CPUProfileScope(const CPUProfileScope&) = delete;
+	CPUProfileScope(const CPUProfileScope&)			   = delete;
 	CPUProfileScope& operator=(const CPUProfileScope&) = delete;
 };
