@@ -108,6 +108,8 @@ void GPUProfiler::Initialize(
 	}
 
 	m_pQueryData = new QueryData[frameLatency];
+	for (uint32 i = 0; i < frameLatency; ++i)
+		m_pQueryData[i].Pairs.resize(queryCapacity / 2);
 
 	m_IsInitialized = true;
 }
@@ -222,6 +224,9 @@ void GPUProfiler::Tick()
 			// Convert to CPU ticks and assign to event
 			event.TicksBegin = ConvertToCPUTicks(queue, queries[queryRange.QueryIndexBegin]);
 			event.TicksEnd	 = ConvertToCPUTicks(queue, queries[queryRange.QueryIndexEnd]);
+
+			// Invalidate
+			queryRange = {};
 		}
 
 		// Sort events by queue and make groups per queue for fast per-queue event iteration.
@@ -270,9 +275,6 @@ void GPUProfiler::Tick()
 		eventFrame.Allocator.Reset();
 		for (uint32 i = 0; i < (uint32)m_Queues.size(); ++i)
 			eventFrame.EventOffsetAndCountPerTrack[i] = {};
-
-		QueryData& queryData = GetQueryData();
-		queryData.Pairs.clear();
 	}
 }
 
@@ -294,9 +296,6 @@ void GPUProfiler::ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3
 	ActiveEventStack&  eventStack  = m_QueueEventStack[queueIndex];
 	QueryData&		   queryData   = GetQueryData();
 	ProfilerEventData& sampleFrame = GetSampleFrame();
-
-	// Ensure there are as many query pairs as there are events
-	queryData.Pairs.resize(sampleFrame.Events.size());
 
 	for (ID3D12CommandList* pCmd : commandLists)
 	{
