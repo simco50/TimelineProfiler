@@ -1,9 +1,10 @@
 
-#define NOMINMAX
 #include "Profiler.h"
-#include <d3d12.h>
 
 #if WITH_PROFILING
+
+#define NOMINMAX
+#include <d3d12.h>
 
 CPUProfiler gCPUProfiler;
 GPUProfiler gGPUProfiler;
@@ -31,16 +32,29 @@ static uint32 ColorFromString(const char* pStr, float hueMin, float hueMax)
 // [SECTION] GPU Profiler
 //-----------------------------------------------------------------------------
 
-void GPUProfiler::Initialize(
-	ID3D12Device*			  pDevice,
-	Span<ID3D12CommandQueue*> queues,
-	uint32					  sampleHistory,
-	uint32					  frameLatency)
+static constexpr const char* GetCommandQueueName(D3D12_COMMAND_LIST_TYPE type)
 {
+	switch (type)
+	{
+	case D3D12_COMMAND_LIST_TYPE_DIRECT:		return "Direct Queue";
+	case D3D12_COMMAND_LIST_TYPE_COMPUTE:		return "Compute Queue";
+	case D3D12_COMMAND_LIST_TYPE_COPY:			return "Copy Queue";
+	case D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE:	return "Video Decode Queue";
+	case D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE:	return "Video Encode Queue";
+	case D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS:	return "Video Process Queue";
+	default:									return "Unknown Queue";
+	}
+}
+
+void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> queues, uint32 sampleHistory, uint32 frameLatency)
+{
+	gAssert(frameLatency >= 1, "Frame Latency must be at least 1");
+
 	m_FrameLatency	   = frameLatency;
 	m_EventHistorySize = sampleHistory;
 
 	InitializeSRWLock((PSRWLOCK)&m_CommandListMapLock);
+	QueryPerformanceFrequency((LARGE_INTEGER*)&m_CPUTickFrequency);
 
 	m_QueueEventStack.resize(queues.size());
 	for (uint32 queueIndex = 0; queueIndex < queues.size(); ++queueIndex)
@@ -51,48 +65,20 @@ void GPUProfiler::Initialize(
 		m_QueueIndexMap[pQueue] = (uint32)m_Queues.size();
 		QueueInfo& queueInfo	= m_Queues.emplace_back();
 		uint32	   size			= ARRAYSIZE(queueInfo.Name);
-
 		constexpr GUID ID_D3DDebugObjectName = { 0x429b8c22, 0x9188, 0x4b0c, 0x87, 0x42, 0xac, 0xb0, 0xbf, 0x85, 0xc2, 0x00 };
 		if (FAILED(pQueue->GetPrivateData(ID_D3DDebugObjectName, &size, queueInfo.Name)))
-		{
-			switch (desc.Type)
-			{
-			case D3D12_COMMAND_LIST_TYPE_DIRECT:
-				strcpy_s(queueInfo.Name, "Direct Queue");
-				break;
-			case D3D12_COMMAND_LIST_TYPE_COMPUTE:
-				strcpy_s(queueInfo.Name, "Compute Queue");
-				break;
-			case D3D12_COMMAND_LIST_TYPE_COPY:
-				strcpy_s(queueInfo.Name, "Copy Queue");
-				break;
-			case D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE:
-				strcpy_s(queueInfo.Name, "Video Decode Queue");
-				break;
-			case D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE:
-				strcpy_s(queueInfo.Name, "Video Encode Queue");
-				break;
-			case D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS:
-				strcpy_s(queueInfo.Name, "Video Process Queue");
-				break;
-			default:
-				strcpy_s(queueInfo.Name, "Unknown Queue");
-				break;
-			}
-		}
-
+			strcpy_s(queueInfo.Name, GetCommandQueueName(desc.Type));
 		queueInfo.pQueue		 = pQueue;
 		queueInfo.Index			 = queueIndex;
 		queueInfo.QueryHeapIndex = desc.Type == D3D12_COMMAND_LIST_TYPE_COPY ? 1 : 0;
-		VERIFY_HR(pQueue->GetClockCalibration(&queueInfo.GPUCalibrationTicks, &queueInfo.CPUCalibrationTicks));
-		VERIFY_HR(pQueue->GetTimestampFrequency(&queueInfo.GPUFrequency));
+		gVerifyHR(pQueue->GetClockCalibration(&queueInfo.GPUCalibrationTicks, &queueInfo.CPUCalibrationTicks));
+		gVerifyHR(pQueue->GetTimestampFrequency(&queueInfo.GPUFrequency));
 
 		if (!GetHeap(queueInfo.QueryHeapIndex).IsInitialized())
 		{
 			GetHeap(queueInfo.QueryHeapIndex).Initialize(pDevice, pQueue, QueryHeap::cMaxNumQueries, frameLatency);
 		}
 	}
-	QueryPerformanceFrequency((LARGE_INTEGER*)&m_CPUTickFrequency);
 
 	// Maximum number of events is the number of queries is the total capacity of all query heaps divided by 2 (a pair of queries per event)
 	int queryCapacity = 0;
@@ -141,8 +127,8 @@ void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName,
 	ProfilerEventData& eventData = GetSampleFrame();
 
 	// Register a query on the commandlist
-	CommandListState&		 pState		  = *GetState(pCmd, true);
-	CommandListState::Query& cmdListQuery = pState.Queries.emplace_back();
+	CommandListState&		 cmdListState = *GetState(pCmd, true);
+	CommandListState::Query& cmdListQuery = cmdListState.Queries.emplace_back();
 
 	// Allocate a query range. This stores a begin/end query index pair. (Also event index)
 	uint32 eventIndex = m_EventIndex.fetch_add(1);
@@ -173,10 +159,10 @@ void GPUProfiler::EndEvent(ID3D12GraphicsCommandList* pCmd)
 		return;
 
 	// Record a timestamp query and assign to the commandlist
-	CommandListState&		 pState = *GetState(pCmd, true);
-	CommandListState::Query& query = pState.Queries.emplace_back();
-	query.QueryIndex			   = GetHeap(pCmd->GetType()).RecordQuery(pCmd);
-	query.EventIndex			   = CommandListState::Query::EndEventFlag; // Range index to indicate this is an 'End' query
+	CommandListState&		 cmdListState = *GetState(pCmd, true);
+	CommandListState::Query& query		  = cmdListState.Queries.emplace_back();
+	query.QueryIndex					  = GetHeap(pCmd->GetType()).RecordQuery(pCmd);
+	query.EventIndex					  = CommandListState::Query::EndEventFlag; // Range index to indicate this is an 'End' query
 }
 
 // Process the last frame and advance to the next
@@ -256,10 +242,8 @@ void GPUProfiler::Tick()
 	if (m_IsPaused)
 		return;
 
-#if ENABLE_ASSERTS
-	for (const CommandListState& pState : m_CommandListData)
-		gAssert(pState.Queries.empty(), "The Queries inside the commandlist is not empty. This is because ExecuteCommandLists was not called with this commandlist.");
-#endif
+	for (const auto& data: m_CommandListMap)
+		gAssert(data.second->Queries.empty(), "The Queries inside the commandlist is not empty. This is because ExecuteCommandLists was not called with this commandlist.");
 
 	for (QueryHeap& heap : m_QueryHeaps)
 		heap.Resolve(m_FrameIndex);
@@ -366,8 +350,8 @@ GPUProfiler::CommandListState::CommandListState(GPUProfiler* profiler, ID3D12Com
 	: pProfiler(profiler), pCommandList(pCmd)
 {
 	ID3DDestructionNotifier* destruction_notifier = nullptr;
-	VERIFY_HR(pCmd->QueryInterface(&destruction_notifier));
-	VERIFY_HR(destruction_notifier->RegisterDestructionCallback([](void* pContext) {
+	gVerifyHR(pCmd->QueryInterface(&destruction_notifier));
+	gVerifyHR(destruction_notifier->RegisterDestructionCallback([](void* pContext) {
 		GPUProfiler::CommandListState* pState = (GPUProfiler::CommandListState*)pContext;
 
 		AcquireSRWLockExclusive((PSRWLOCK)&pState->pProfiler->m_CommandListMapLock);
@@ -385,8 +369,8 @@ GPUProfiler::CommandListState::CommandListState(GPUProfiler* profiler, ID3D12Com
 GPUProfiler::CommandListState::~CommandListState()
 {
 	ID3DDestructionNotifier* destruction_notifier = nullptr;
-	VERIFY_HR(pCommandList->QueryInterface(&destruction_notifier));
-	VERIFY_HR(destruction_notifier->UnregisterDestructionCallback(DestructionEventID));
+	gVerifyHR(pCommandList->QueryInterface(&destruction_notifier));
+	gVerifyHR(destruction_notifier->UnregisterDestructionCallback(DestructionEventID));
 	destruction_notifier->Release();
 }
 
@@ -407,11 +391,11 @@ void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueu
 		.Count	  = maxNumQueries,
 		.NodeMask = 0x1,
 	};
-	VERIFY_HR(pDevice->CreateQueryHeap(&heapDesc, IID_PPV_ARGS(&m_pQueryHeap)));
+	gVerifyHR(pDevice->CreateQueryHeap(&heapDesc, IID_PPV_ARGS(&m_pQueryHeap)));
 
 	for (uint32 i = 0; i < frameLatency; ++i)
-		VERIFY_HR(pDevice->CreateCommandAllocator(queueDesc.Type, IID_PPV_ARGS(&m_CommandAllocators.emplace_back())));
-	VERIFY_HR(pDevice->CreateCommandList(0x1, queueDesc.Type, m_CommandAllocators[0], nullptr, IID_PPV_ARGS(&m_pCommandList)));
+		gVerifyHR(pDevice->CreateCommandAllocator(queueDesc.Type, IID_PPV_ARGS(&m_CommandAllocators.emplace_back())));
+	gVerifyHR(pDevice->CreateCommandList(0x1, queueDesc.Type, m_CommandAllocators[0], nullptr, IID_PPV_ARGS(&m_pCommandList)));
 
 	D3D12_RESOURCE_DESC readbackDesc{
 		.Dimension		  = D3D12_RESOURCE_DIMENSION_BUFFER,
@@ -437,12 +421,12 @@ void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueu
 		.VisibleNodeMask	  = 0,
 	};
 
-	VERIFY_HR(pDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &readbackDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_pReadbackResource)));
+	gVerifyHR(pDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &readbackDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_pReadbackResource)));
 	void* pReadbackData = nullptr;
-	VERIFY_HR(m_pReadbackResource->Map(0, nullptr, &pReadbackData));
+	gVerifyHR(m_pReadbackResource->Map(0, nullptr, &pReadbackData));
 	m_ReadbackData = Span<const uint64>(static_cast<uint64*>(pReadbackData), maxNumQueries * frameLatency);
 
-	VERIFY_HR(pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pResolveFence)));
+	gVerifyHR(pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pResolveFence)));
 }
 
 void GPUProfiler::QueryHeap::Shutdown()
@@ -477,10 +461,10 @@ uint32 GPUProfiler::QueryHeap::Resolve(uint32 frameIndex)
 	uint32 queryStart = frameBit * m_MaxNumQueries;
 	uint32 numQueries = std::min(m_MaxNumQueries, (uint32)m_QueryIndex);
 	m_pCommandList->ResolveQueryData(m_pQueryHeap, D3D12_QUERY_TYPE_TIMESTAMP, 0, numQueries, m_pReadbackResource, queryStart * sizeof(uint64));
-	VERIFY_HR(m_pCommandList->Close());
+	gVerifyHR(m_pCommandList->Close());
 	ID3D12CommandList* pCmdLists[] = { m_pCommandList };
 	m_pResolveQueue->ExecuteCommandLists(1, pCmdLists);
-	VERIFY_HR(m_pResolveQueue->Signal(m_pResolveFence, frameIndex));
+	gVerifyHR(m_pResolveQueue->Signal(m_pResolveFence, frameIndex));
 	return numQueries;
 }
 
@@ -499,8 +483,8 @@ void GPUProfiler::QueryHeap::Reset(uint32 frameIndex)
 
 	m_QueryIndex					   = 0;
 	ID3D12CommandAllocator* pAllocator = m_CommandAllocators[frameIndex % m_FrameLatency];
-	VERIFY_HR(pAllocator->Reset());
-	VERIFY_HR(m_pCommandList->Reset(pAllocator, nullptr));
+	gVerifyHR(pAllocator->Reset());
+	gVerifyHR(m_pCommandList->Reset(pAllocator, nullptr));
 }
 
 bool GPUProfiler::QueryHeap::IsFrameComplete(uint64 frameIndex)
@@ -544,7 +528,7 @@ void CPUProfiler::BeginEvent(const char* pName, uint32 color, const char* pFileP
 		return;
 
 	// Record new event
-	EventTrack& track	  = GetCurrentThreadTrack();
+	EventTrack& track		= GetCurrentThreadTrack();
 	track.EventStack.Push() = (uint32)track.Events.size();
 
 	ProfilerEvent& newEvent = track.Events.emplace_back();
@@ -629,9 +613,9 @@ void CPUProfiler::Tick()
 
 
 // Register a new thread
-int CPUProfiler::RegisterThread(const char* pName)
+int CPUProfiler::RegisterCurrentThread(const char* pName)
 {
-	int& threadIndex = GetCurrentThreadIndex();
+	int& threadIndex = GetCurrentThreadTrackIndex();
 
 	const char* pLocalName = pName;
 	char name[256]{};

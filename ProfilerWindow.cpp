@@ -10,6 +10,12 @@
 #define NOMINMAX
 #include <windows.h>
 
+void HandleAssertMessage(const char* pMessage)
+{
+	printf(pMessage);
+	OutputDebugStringA(pMessage);
+}
+
 class StringHash
 {
 private:
@@ -759,6 +765,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 		context.TimelineOffset.y = -(float)scrollV;
 	}
 }
+
 
 void DrawProfilerHUD()
 {

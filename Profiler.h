@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <array>
-#include <assert.h>
 #include <atomic>
 #include <cinttypes>
 #include <mutex>
@@ -16,15 +15,38 @@
 #include <unordered_map>
 #include <vector>
 
-#define gAssert(op, ...) assert(op)
-#define gAssert(op, ...) assert(op)
-#define gVerify(op, expected) \
+void HandleAssertMessage(const char* pMessage);
+
+template<typename... Args>
+static void HandleAssertMessage(const char* pExpression, const char* pFileName, int line, const char* pFmt = nullptr, Args... args)
+{
+	char message[1024]{};
+	if (pFmt)
+		sprintf_s(message, pFmt, std::forward<Args>(args)...);
+	char finalMessage[1024]{};
+	sprintf_s(finalMessage, "ASSERT FAILED:\nExpression: %s\nFile: %s:%d\n%s\n", pExpression, __FILE__, __LINE__, message);
+	HandleAssertMessage(finalMessage);
+}
+
+#define gAssert(op, ...)                                               \
+	do                                                                 \
+	{                                                                  \
+		bool result = (op);                                            \
+		if (result == false)                                           \
+		{                                                              \
+			HandleAssertMessage(#op, __FILE__, __LINE__, __VA_ARGS__); \
+			__debugbreak();                                            \
+		}                                                              \
+	} while (false);
+
+#define gVerify(op, expected, ...) \
 	do                        \
 	{                         \
 		auto r = (op);        \
-		gAssert(r expected);  \
+		gAssert(r expected, __VA_ARGS__);  \
 	} while (false)
-#define VERIFY_HR(op)				 gVerify(op, == S_OK)
+
+#define gVerifyHR(op)				 gVerify(op, == S_OK, "HRESULT Failed")
 #define gBoundCheck(val, minV, maxV) gAssert(val >= minV && val < maxV, "Value out of bounds")
 
 #define _STRINGIFY(a)	   #a
@@ -46,6 +68,13 @@ using StaticArray = std::array<T, Size>;
 template <typename K, typename V>
 using HashMap = std::unordered_map<K, V>;
 
+struct URange
+{
+	uint32 Begin = 0;
+	uint32 End	 = 0;
+	uint32 GetLength() const { return End - Begin; }
+};
+
 // Forward declare D3D12 types
 struct ID3D12CommandList;
 struct ID3D12GraphicsCommandList;
@@ -57,12 +86,6 @@ struct ID3D12QueryHeap;
 struct ID3D12Fence;
 using WinHandle = void*;
 
-struct URange
-{
-	uint32 Begin = 0;
-	uint32 End = 0;
-	uint32 GetLength() const { return End - Begin; }
-};
 
 /*
 	General
@@ -71,7 +94,7 @@ struct URange
 // Usage:
 //		PROFILE_REGISTER_THREAD(const char* pName)
 //		PROFILE_REGISTER_THREAD()
-#define PROFILE_REGISTER_THREAD(...) gCPUProfiler.RegisterThread(__VA_ARGS__)
+#define PROFILE_REGISTER_THREAD(...) gCPUProfiler.RegisterCurrentThread(__VA_ARGS__)
 
 /// Usage:
 //		PROFILE_FRAME()
@@ -225,15 +248,15 @@ struct ProfilerEvent
 	uint32		Color		: 24 = 0xFFFFFF; ///< Color
 	uint32		Depth		: 8	 = 0;		 ///< Stack depth of event
 	uint32		LineNumber	: 18 = 0;		 ///< Line number of file where event was started
-	uint32		ThreadIndex : 8	 = 0;		 ///< Index of thread this event is started on
-	uint32		QueueIndex	: 6	 = 0;		 ///< GPU Queue Index (GPU-specific)
-
-	uint64 TicksBegin = 0; ///< Begin CPU ticks
-	uint64 TicksEnd	  = 0; ///< End CPU ticks
+	uint32		ThreadIndex : 10 = 0;		 ///< Index of thread this event is started on
+	uint32		QueueIndex	: 4	 = 0;		 ///< GPU Queue Index (GPU-specific)
+	uint64		TicksBegin		 = 0;		 ///< Begin CPU ticks
+	uint64		TicksEnd		 = 0;		 ///< End CPU ticks
 
 	bool   IsValid() const { return TicksBegin != 0 && TicksEnd != 0; }
 	uint32 GetColor() const { return Color | (0xFF << 24); }
 };
+static_assert(std::has_unique_object_representations_v<ProfilerEvent>);
 
 // Data for a single frame of profiling events
 class ProfilerEventData
@@ -410,7 +433,9 @@ private:
 			uint32 EventIndex : 16							= InvalidEventFlag; ///< The ProfilerEvent index. 0xFFFE is it is an "EndEvent"
 		};
 		static_assert(sizeof(Query) == sizeof(uint32));
-		GPUProfiler*	   pProfiler	= nullptr;
+		static_assert(std::has_unique_object_representations_v<Query>);
+
+		GPUProfiler*	   pProfiler		  = nullptr;
 		ID3D12CommandList* pCommandList = nullptr;
 		uint32			   DestructionEventID = 0;
 		Array<Query>	   Queries;
@@ -519,7 +544,7 @@ public:
 	void Tick();
 
 	// Initialize a thread with an optional name
-	int RegisterThread(const char* pName = nullptr);
+	int RegisterCurrentThread(const char* pName = nullptr);
 
 	// Register a new track
 	int RegisterTrack(const char* pName, uint32 id);
@@ -555,7 +580,7 @@ public:
 	bool IsPaused() const { return m_Paused; }
 
 private:
-	int& GetCurrentThreadIndex()
+	int& GetCurrentThreadTrackIndex()
 	{
 		static thread_local int index = -1;
 		return index;
@@ -563,12 +588,11 @@ private:
 
 	EventTrack& GetCurrentThreadTrack()
 	{
-		int index = GetCurrentThreadIndex();
+		int index = GetCurrentThreadTrackIndex();
 		if (index == -1)
-			index = RegisterThread();
-		return m_Tracks[GetCurrentThreadIndex()];
+			index = RegisterCurrentThread();
+		return m_Tracks[GetCurrentThreadTrackIndex()];
 	}
-
 
 	// Return the sample data of the current frame
 	ProfilerEventData&		 GetData() { return GetData(m_FrameIndex); }
