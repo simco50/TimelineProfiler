@@ -177,6 +177,7 @@ void GPUProfiler::EndEvent(ID3D12GraphicsCommandList* pCmd)
 	query.EventIndex			   = CommandListState::Query::EndEventFlag; // Range index to indicate this is an 'End' query
 }
 
+// Process the last frame and advance to the next
 void GPUProfiler::Tick()
 {
 	if (!m_IsInitialized)
@@ -184,10 +185,6 @@ void GPUProfiler::Tick()
 
 	for (ActiveEventStack& stack : m_QueueEventStack)
 		gAssert(stack.GetSize() == 0, "EventStack for the CommandQueue should be empty. Forgot to `End()` %d Events", stack.GetSize());
-
-	// If the next frame is not finished resolving, wait for it here so the data can be read from before it's being reset
-	for (QueryHeap& heap : m_QueryHeaps)
-		heap.WaitFrame(m_FrameIndex);
 
 	ProfilerEventData& currEventFrame = GetSampleFrame(m_FrameIndex);
 	currEventFrame.NumEvents		  = std::min((uint32)currEventFrame.Events.size(), (uint32)m_EventIndex);
@@ -382,7 +379,7 @@ GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bo
 void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pResolveQueue, uint32 maxNumQueries, uint32 frameLatency)
 {
 	gAssert(maxNumQueries <= cMaxNumQueries, "Max number of queries (%d) should not exceed %d", maxNumQueries, cMaxNumQueries);
-	
+
 	m_pResolveQueue = pResolveQueue;
 	m_FrameLatency	= frameLatency;
 	m_MaxNumQueries = maxNumQueries;
@@ -430,7 +427,6 @@ void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueu
 	m_ReadbackData = Span<const uint64>(static_cast<uint64*>(pReadbackData), maxNumQueries * frameLatency);
 
 	VERIFY_HR(pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pResolveFence)));
-	m_ResolveWaitHandle = CreateEventExA(nullptr, "Fence Event", 0, EVENT_ALL_ACCESS);
 }
 
 void GPUProfiler::QueryHeap::Shutdown()
@@ -444,7 +440,6 @@ void GPUProfiler::QueryHeap::Shutdown()
 	m_pQueryHeap->Release();
 	m_pReadbackResource->Release();
 	m_pResolveFence->Release();
-	CloseHandle(m_ResolveWaitHandle);
 }
 
 uint32 GPUProfiler::QueryHeap::RecordQuery(ID3D12GraphicsCommandList* pCmd)
@@ -469,7 +464,7 @@ uint32 GPUProfiler::QueryHeap::Resolve(uint32 frameIndex)
 	VERIFY_HR(m_pCommandList->Close());
 	ID3D12CommandList* pCmdLists[] = { m_pCommandList };
 	m_pResolveQueue->ExecuteCommandLists(1, pCmdLists);
-	VERIFY_HR(m_pResolveQueue->Signal(m_pResolveFence, frameIndex + 1));
+	VERIFY_HR(m_pResolveQueue->Signal(m_pResolveFence, frameIndex));
 	return numQueries;
 }
 
@@ -477,6 +472,14 @@ void GPUProfiler::QueryHeap::Reset(uint32 frameIndex)
 {
 	if (!IsInitialized())
 		return;
+
+	// Don't advance to the next frame until the GPU has caught up until at least the frame latency
+	if (frameIndex >= m_FrameLatency)
+	{
+		uint32 wait_frame = frameIndex - m_FrameLatency;
+		if (!IsFrameComplete(wait_frame))
+			m_pResolveFence->SetEventOnCompletion(wait_frame, nullptr);
+	}
 
 	m_QueryIndex					   = 0;
 	ID3D12CommandAllocator* pAllocator = m_CommandAllocators[frameIndex % m_FrameLatency];
@@ -494,18 +497,6 @@ bool GPUProfiler::QueryHeap::IsFrameComplete(uint64 frameIndex)
 		return true;
 	m_LastCompletedFence = std::max(m_pResolveFence->GetCompletedValue(), m_LastCompletedFence);
 	return fenceValue <= m_LastCompletedFence;
-}
-
-void GPUProfiler::QueryHeap::WaitFrame(uint32 frameIndex)
-{
-	if (!IsInitialized())
-		return;
-
-	if (!IsFrameComplete(frameIndex))
-	{
-		m_pResolveFence->SetEventOnCompletion(frameIndex, m_ResolveWaitHandle);
-		WaitForSingleObject(m_ResolveWaitHandle, INFINITE);
-	}
 }
 
 //-----------------------------------------------------------------------------
@@ -571,7 +562,7 @@ void CPUProfiler::EndEvent()
 	QueryPerformanceCounter((LARGE_INTEGER*)(&event.TicksEnd));
 }
 
-// Process the current frame and advance to the next
+// Process the last frame and advance
 void CPUProfiler::Tick()
 {
 	if (!m_IsInitialized)

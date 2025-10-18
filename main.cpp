@@ -183,7 +183,7 @@ int main(int, char**)
 
     gCPUProfiler.Initialize(5);
     Span<ID3D12CommandQueue*> queues(&g_pd3dCommandQueue, 1);
-    gGPUProfiler.Initialize(g_pd3dDevice, queues, 5, 3);
+    gGPUProfiler.Initialize(g_pd3dDevice, queues, 5, 2);
 
     // Before 1.91.6: our signature was using a single descriptor. From 1.92, specifying SrvDescriptorAllocFn/SrvDescriptorFreeFn will be required to benefit from new features.
     //ImGui_ImplDX12_Init(g_pd3dDevice, APP_NUM_FRAMES_IN_FLIGHT, DXGI_FORMAT_R8G8B8A8_UNORM, g_pd3dSrvDescHeap, g_pd3dSrvDescHeap->GetCPUDescriptorHandleForHeapStart(), g_pd3dSrvDescHeap->GetGPUDescriptorHandleForHeapStart());
@@ -248,9 +248,13 @@ int main(int, char**)
         g_SwapChainOccluded = false;
 
         // Start the Dear ImGui frame
-        ImGui_ImplDX12_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
+		{
+            PROFILE_CPU_SCOPE("NewFrame");
+
+			ImGui_ImplDX12_NewFrame();
+			ImGui_ImplWin32_NewFrame();
+			ImGui::NewFrame();
+		}
 
         DrawProfilerHUD();
 
@@ -331,14 +335,23 @@ int main(int, char**)
         }
         g_pd3dCommandList->Close();
 
-        Span<ID3D12CommandList*> cmdlists((ID3D12CommandList**)&g_pd3dCommandList, 1);
-        PROFILE_EXECUTE_COMMANDLISTS(g_pd3dCommandQueue, cmdlists);
-        g_pd3dCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&g_pd3dCommandList);
+        {
+			{
+				PROFILE_CPU_SCOPE("Profiler::ExecuteCommandLists");
+
+				Span<ID3D12CommandList*> cmdlists((ID3D12CommandList**)&g_pd3dCommandList, 1);
+				PROFILE_EXECUTE_COMMANDLISTS(g_pd3dCommandQueue, cmdlists);
+			}
+
+            PROFILE_CPU_SCOPE("ExecuteCommandLists");
+			g_pd3dCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&g_pd3dCommandList);
+		}
 
         // Update and Render additional Platform Windows
         if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
         {
-            ImGui::UpdatePlatformWindows();
+			PROFILE_CPU_SCOPE("Update Viewports");
+			ImGui::UpdatePlatformWindows();
             ImGui::RenderPlatformWindowsDefault();
         }
 
@@ -346,10 +359,14 @@ int main(int, char**)
         frameCtx->FenceValue = g_fenceLastSignaledValue;
 
         // Present
-        HRESULT hr = g_pSwapChain->Present(1, 0);   // Present with vsync
-        //HRESULT hr = g_pSwapChain->Present(0, g_SwapChainTearingSupport ? DXGI_PRESENT_ALLOW_TEARING : 0); // Present without vsync
-        g_SwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
-        g_frameIndex++;
+		{
+			PROFILE_CPU_SCOPE("Present");
+
+			HRESULT hr = g_pSwapChain->Present(1, 0); // Present with vsync
+			// HRESULT hr = g_pSwapChain->Present(0, g_SwapChainTearingSupport ? DXGI_PRESENT_ALLOW_TEARING : 0); // Present without vsync
+			g_SwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
+			g_frameIndex++;
+		}
     }
 
     WaitForPendingOperations();

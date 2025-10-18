@@ -351,7 +351,6 @@ private:
 		uint32 Resolve(uint32 frameIndex);
 		void   Reset(uint32 frameIndex);
 		bool   IsFrameComplete(uint64 frameIndex);
-		void   WaitFrame(uint32 frameIndex);
 		uint32 GetQueryCapacity() const { return m_MaxNumQueries; }
 
 		Span<const uint64> GetQueryData(uint32 frameIndex) const
@@ -377,7 +376,6 @@ private:
 		Span<const uint64>			   m_ReadbackData		= {};	   ///< Mapped readback resource pointer
 		ID3D12CommandQueue*			   m_pResolveQueue		= nullptr; ///< Queue to resolve queries on
 		ID3D12Fence*				   m_pResolveFence		= nullptr; ///< Fence for tracking when queries are finished resolving
-		WinHandle					   m_ResolveWaitHandle	= nullptr; ///< Handle to allow waiting for resolve to finish
 		uint64						   m_LastCompletedFence = 0;	   ///< Last finish fence value
 	};
 
