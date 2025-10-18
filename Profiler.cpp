@@ -35,13 +35,8 @@ void GPUProfiler::Initialize(
 	ID3D12Device*			  pDevice,
 	Span<ID3D12CommandQueue*> queues,
 	uint32					  sampleHistory,
-	uint32					  frameLatency,
-	uint32					  maxNumEvents,
-	uint32					  maxNumCopyEvents)
+	uint32					  frameLatency)
 {
-	// Event indices are 16 bit, so max 2^16 events
-	gAssert(maxNumEvents + maxNumCopyEvents < (1u << 16u));
-
 	m_FrameLatency	   = frameLatency;
 	m_EventHistorySize = sampleHistory;
 
@@ -92,16 +87,23 @@ void GPUProfiler::Initialize(
 		VERIFY_HR(pQueue->GetClockCalibration(&queueInfo.GPUCalibrationTicks, &queueInfo.CPUCalibrationTicks));
 		VERIFY_HR(pQueue->GetTimestampFrequency(&queueInfo.GPUFrequency));
 
-		if (!GetHeap(desc.Type).IsInitialized())
-			GetHeap(desc.Type).Initialize(pDevice, pQueue, 2 * (desc.Type == D3D12_COMMAND_LIST_TYPE_COPY ? maxNumCopyEvents : maxNumEvents), frameLatency);
+		if (!GetHeap(queueInfo.QueryHeapIndex).IsInitialized())
+		{
+			GetHeap(queueInfo.QueryHeapIndex).Initialize(pDevice, pQueue, QueryHeap::cMaxNumQueries, frameLatency);
+		}
 	}
 	QueryPerformanceFrequency((LARGE_INTEGER*)&m_CPUTickFrequency);
+
+	// Maximum number of events is the number of queries is the total capacity of all query heaps divided by 2 (a pair of queries per event)
+	int queryCapacity = 0;
+	for (QueryHeap& heap : m_QueryHeaps)
+		queryCapacity += heap.GetQueryCapacity();
 
 	m_pEventData = new ProfilerEventData[sampleHistory];
 	for (uint32 i = 0; i < sampleHistory; ++i)
 	{
 		ProfilerEventData& eventData = m_pEventData[i];
-		eventData.Events.resize(maxNumEvents + maxNumCopyEvents);
+		eventData.Events.resize(queryCapacity / 2);
 		eventData.EventOffsetAndCountPerTrack.resize(queues.size());
 	}
 
@@ -379,6 +381,8 @@ GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bo
 
 void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pResolveQueue, uint32 maxNumQueries, uint32 frameLatency)
 {
+	gAssert(maxNumQueries <= cMaxNumQueries, "Max number of queries (%d) should not exceed %d", maxNumQueries, cMaxNumQueries);
+	
 	m_pResolveQueue = pResolveQueue;
 	m_FrameLatency	= frameLatency;
 	m_MaxNumQueries = maxNumQueries;

@@ -286,9 +286,7 @@ public:
 		ID3D12Device*			  pDevice,
 		Span<ID3D12CommandQueue*> queues,
 		uint32					  sampleHistory,
-		uint32					  frameLatency,
-		uint32					  maxNumEvents,
-		uint32					  maxNumCopyEvents);
+		uint32					  frameLatency);
 
 	void Shutdown();
 
@@ -343,6 +341,9 @@ private:
 	struct QueryHeap
 	{
 	public:
+		constexpr static uint32 cQueryIndexBits = 16u;
+		constexpr static uint32 cMaxNumQueries = (1u << cQueryIndexBits) - 1u;
+		
 		void Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pResolveQueue, uint32 maxNumQueries, uint32 frameLatency);
 		void Shutdown();
 
@@ -351,6 +352,7 @@ private:
 		void   Reset(uint32 frameIndex);
 		bool   IsFrameComplete(uint64 frameIndex);
 		void   WaitFrame(uint32 frameIndex);
+		uint32 GetQueryCapacity() const { return m_MaxNumQueries; }
 
 		Span<const uint64> GetQueryData(uint32 frameIndex) const
 		{
@@ -388,8 +390,8 @@ private:
 	{
 		struct QueryPair
 		{
-			uint32 QueryIndexBegin : 16 = 0xFFFF;
-			uint32 QueryIndexEnd   : 16 = 0xFFFF;
+			uint32 QueryIndexBegin : QueryHeap::cQueryIndexBits = 0xFFFF;
+			uint32 QueryIndexEnd   : QueryHeap::cQueryIndexBits = 0xFFFF;
 
 			bool IsValid() const { return QueryIndexBegin != 0xFFFF && QueryIndexEnd != 0xFFFF; }
 		};
@@ -407,8 +409,8 @@ private:
 			static constexpr uint32 EndEventFlag	 = 0xFFFE;
 			static constexpr uint32 InvalidEventFlag = 0xFFFF;
 			
-			uint32 QueryIndex : 16 = InvalidEventFlag; ///< The index into the query heap
-			uint32 EventIndex : 16 = InvalidEventFlag; ///< The ProfilerEvent index. 0xFFFE is it is an "EndEvent"
+			uint32 QueryIndex : QueryHeap::cQueryIndexBits	= InvalidEventFlag; ///< The index into the query heap
+			uint32 EventIndex : 16							= InvalidEventFlag; ///< The ProfilerEvent index. 0xFFFE is it is an "EndEvent"
 		};
 		static_assert(sizeof(Query) == sizeof(uint32));
 		GPUProfiler*	   pProfiler	= nullptr;
