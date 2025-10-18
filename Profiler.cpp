@@ -351,23 +351,8 @@ GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bo
 	if (!pState && createIfNotFound)
 	{
 		// If not, register new commandlist
-		pState			  = new CommandListState;
-		pState->pProfiler = this;
-
-		// Add callback for when commandlist is destroyed
 		// TODO: Pool CommandListStates in case ID3D12CommandLists are often recreated
-		ID3DDestructionNotifier* destruction_notifier = nullptr;
-		VERIFY_HR(pCmd->QueryInterface(&destruction_notifier));
-		VERIFY_HR(destruction_notifier->RegisterDestructionCallback([](void* pContext) {
-			GPUProfiler::CommandListState* pState = (GPUProfiler::CommandListState*)pContext;
-
-			AcquireSRWLockExclusive((PSRWLOCK)&pState->pProfiler->m_CommandListMapLock);
-			pState->pProfiler->m_CommandListMap.erase(pState->pCommandList);
-			ReleaseSRWLockExclusive((PSRWLOCK)&pState->pProfiler->m_CommandListMapLock);
-			
-			delete pState;
-
-		}, pState, nullptr));
+		pState				 = new CommandListState(this, pCmd);
 	
 		AcquireSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
 		m_CommandListMap[pCmd] = pState;
@@ -375,6 +360,38 @@ GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bo
 	}
 	return pState;
 }
+
+
+
+GPUProfiler::CommandListState::CommandListState(GPUProfiler* profiler, ID3D12CommandList* pCmd)
+	: pProfiler(profiler), pCommandList(pCmd)
+{
+	ID3DDestructionNotifier* destruction_notifier = nullptr;
+	VERIFY_HR(pCmd->QueryInterface(&destruction_notifier));
+	VERIFY_HR(destruction_notifier->RegisterDestructionCallback([](void* pContext) {
+		GPUProfiler::CommandListState* pState = (GPUProfiler::CommandListState*)pContext;
+
+		AcquireSRWLockExclusive((PSRWLOCK)&pState->pProfiler->m_CommandListMapLock);
+		pState->pProfiler->m_CommandListMap.erase(pState->pCommandList);
+		ReleaseSRWLockExclusive((PSRWLOCK)&pState->pProfiler->m_CommandListMapLock);
+
+		delete pState;
+	}, this, &DestructionEventID));
+
+	destruction_notifier->Release();
+}
+
+
+
+GPUProfiler::CommandListState::~CommandListState()
+{
+	ID3DDestructionNotifier* destruction_notifier = nullptr;
+	VERIFY_HR(pCommandList->QueryInterface(&destruction_notifier));
+	VERIFY_HR(destruction_notifier->UnregisterDestructionCallback(DestructionEventID));
+	destruction_notifier->Release();
+}
+
+
 
 void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pResolveQueue, uint32 maxNumQueries, uint32 frameLatency)
 {

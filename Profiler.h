@@ -402,6 +402,9 @@ private:
 	// Contains the state for a tracked commandlist
 	struct CommandListState
 	{
+		CommandListState(GPUProfiler* profiler, ID3D12CommandList* pCmd);
+		~CommandListState();
+
 		struct Query
 		{
 			static constexpr uint32 EndEventFlag	 = 0xFFFE;
@@ -413,6 +416,7 @@ private:
 		static_assert(sizeof(Query) == sizeof(uint32));
 		GPUProfiler*	   pProfiler	= nullptr;
 		ID3D12CommandList* pCommandList = nullptr;
+		uint32			   DestructionEventID = 0;
 		Array<Query>	   Queries;
 	};
 
