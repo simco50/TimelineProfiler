@@ -57,10 +57,8 @@ void GPUProfiler::Initialize(
 		QueueInfo& queueInfo	= m_Queues.emplace_back();
 		uint32	   size			= ARRAYSIZE(queueInfo.Name);
 
-		GUID WKPDID_D3DDebugObjectName = { 0x429b8c22, 0x9188, 0x4b0c, 0x87, 0x42, 0xac, 0xb0, 0xbf, 0x85, 0xc2, 0x00 };
-
-
-		if (FAILED(pQueue->GetPrivateData(WKPDID_D3DDebugObjectName, &size, queueInfo.Name)))
+		constexpr GUID ID_D3DDebugObjectName = { 0x429b8c22, 0x9188, 0x4b0c, 0x87, 0x42, 0xac, 0xb0, 0xbf, 0x85, 0xc2, 0x00 };
+		if (FAILED(pQueue->GetPrivateData(ID_D3DDebugObjectName, &size, queueInfo.Name)))
 		{
 			switch (desc.Type)
 			{
@@ -91,8 +89,8 @@ void GPUProfiler::Initialize(
 		queueInfo.pQueue		 = pQueue;
 		queueInfo.Index			 = queueIndex;
 		queueInfo.QueryHeapIndex = desc.Type == D3D12_COMMAND_LIST_TYPE_COPY ? 1 : 0;
-		pQueue->GetClockCalibration(&queueInfo.GPUCalibrationTicks, &queueInfo.CPUCalibrationTicks);
-		pQueue->GetTimestampFrequency(&queueInfo.GPUFrequency);
+		VERIFY_HR(pQueue->GetClockCalibration(&queueInfo.GPUCalibrationTicks, &queueInfo.CPUCalibrationTicks));
+		VERIFY_HR(pQueue->GetTimestampFrequency(&queueInfo.GPUFrequency));
 
 		if (!GetHeap(desc.Type).IsInitialized())
 			GetHeap(desc.Type).Initialize(pDevice, pQueue, 2 * (desc.Type == D3D12_COMMAND_LIST_TYPE_COPY ? maxNumCopyEvents : maxNumEvents), frameLatency);
@@ -234,7 +232,7 @@ void GPUProfiler::Tick()
 			return a.QueueIndex < b.QueueIndex;
 		});
 
-		URange eventRange(0, 0);
+		URange eventRange {};
 		for (uint32 queueIndex = 0; queueIndex < (uint32)m_Queues.size() && eventRange.Begin < eventData.NumEvents; ++queueIndex)
 		{
 			while (queueIndex > events[eventRange.Begin].QueueIndex)
@@ -243,7 +241,7 @@ void GPUProfiler::Tick()
 			while (events[eventRange.End].QueueIndex == queueIndex && eventRange.End < eventData.NumEvents)
 				++eventRange.End;
 
-			eventData.EventOffsetAndCountPerTrack[queueIndex] = ProfilerEventData::OffsetAndSize(eventRange.Begin, eventRange.End - eventRange.Begin);
+			eventData.EventOffsetAndCountPerTrack[queueIndex] = { .Offset = eventRange.Begin, .Size = eventRange.End - eventRange.Begin };
 			eventRange.Begin								  = eventRange.End;
 		}
 
@@ -279,7 +277,7 @@ void GPUProfiler::Tick()
 	}
 }
 
-void GPUProfiler::ExecuteCommandLists(ID3D12CommandQueue* pQueue, Span<ID3D12CommandList*> commandLists)
+void GPUProfiler::ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3D12CommandList*> commandLists)
 {
 	if (!m_IsInitialized)
 		return;
@@ -342,6 +340,7 @@ void GPUProfiler::ExecuteCommandLists(ID3D12CommandQueue* pQueue, Span<ID3D12Com
 	}
 }
 
+
 GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bool createIfNotFound)
 {
 	// See if it's already tracked
@@ -359,8 +358,8 @@ GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bo
 		// Add callback for when commandlist is destroyed
 		// TODO: Pool CommandListStates in case ID3D12CommandLists are often recreated
 		ID3DDestructionNotifier* destruction_notifier = nullptr;
-		pCmd->QueryInterface(&destruction_notifier);
-		destruction_notifier->RegisterDestructionCallback([](void* pContext) {
+		VERIFY_HR(pCmd->QueryInterface(&destruction_notifier));
+		VERIFY_HR(destruction_notifier->RegisterDestructionCallback([](void* pContext) {
 			GPUProfiler::CommandListState* pState = (GPUProfiler::CommandListState*)pContext;
 
 			AcquireSRWLockExclusive((PSRWLOCK)&pState->pProfiler->m_CommandListMapLock);
@@ -369,7 +368,7 @@ GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bo
 			
 			delete pState;
 
-		}, pState, nullptr);
+		}, pState, nullptr));
 	
 		AcquireSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
 		m_CommandListMap[pCmd] = pState;
@@ -386,15 +385,16 @@ void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueu
 
 	D3D12_COMMAND_QUEUE_DESC queueDesc = pResolveQueue->GetDesc();
 
-	D3D12_QUERY_HEAP_DESC heapDesc{};
-	heapDesc.Count	  = maxNumQueries;
-	heapDesc.NodeMask = 0x1;
-	heapDesc.Type	  = queueDesc.Type == D3D12_COMMAND_LIST_TYPE_COPY ? D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP : D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-	pDevice->CreateQueryHeap(&heapDesc, IID_PPV_ARGS(&m_pQueryHeap));
+	D3D12_QUERY_HEAP_DESC heapDesc{
+		.Type	  = queueDesc.Type == D3D12_COMMAND_LIST_TYPE_COPY ? D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP : D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+		.Count	  = maxNumQueries,
+		.NodeMask = 0x1,
+	};
+	VERIFY_HR(pDevice->CreateQueryHeap(&heapDesc, IID_PPV_ARGS(&m_pQueryHeap)));
 
 	for (uint32 i = 0; i < frameLatency; ++i)
-		pDevice->CreateCommandAllocator(queueDesc.Type, IID_PPV_ARGS(&m_CommandAllocators.emplace_back()));
-	pDevice->CreateCommandList(0x1, queueDesc.Type, m_CommandAllocators[0], nullptr, IID_PPV_ARGS(&m_pCommandList));
+		VERIFY_HR(pDevice->CreateCommandAllocator(queueDesc.Type, IID_PPV_ARGS(&m_CommandAllocators.emplace_back())));
+	VERIFY_HR(pDevice->CreateCommandList(0x1, queueDesc.Type, m_CommandAllocators[0], nullptr, IID_PPV_ARGS(&m_pCommandList)));
 
 	D3D12_RESOURCE_DESC readbackDesc{
 		.Dimension		  = D3D12_RESOURCE_DIMENSION_BUFFER,
@@ -420,12 +420,12 @@ void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueu
 		.VisibleNodeMask	  = 0,
 	};
 
-	pDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &readbackDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_pReadbackResource));
+	VERIFY_HR(pDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &readbackDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_pReadbackResource)));
 	void* pReadbackData = nullptr;
-	m_pReadbackResource->Map(0, nullptr, &pReadbackData);
+	VERIFY_HR(m_pReadbackResource->Map(0, nullptr, &pReadbackData));
 	m_ReadbackData = Span<const uint64>(static_cast<uint64*>(pReadbackData), maxNumQueries * frameLatency);
 
-	pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pResolveFence));
+	VERIFY_HR(pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pResolveFence)));
 	m_ResolveWaitHandle = CreateEventExA(nullptr, "Fence Event", 0, EVENT_ALL_ACCESS);
 }
 
@@ -462,10 +462,10 @@ uint32 GPUProfiler::QueryHeap::Resolve(uint32 frameIndex)
 	uint32 queryStart = frameBit * m_MaxNumQueries;
 	uint32 numQueries = std::min(m_MaxNumQueries, (uint32)m_QueryIndex);
 	m_pCommandList->ResolveQueryData(m_pQueryHeap, D3D12_QUERY_TYPE_TIMESTAMP, 0, numQueries, m_pReadbackResource, queryStart * sizeof(uint64));
-	m_pCommandList->Close();
+	VERIFY_HR(m_pCommandList->Close());
 	ID3D12CommandList* pCmdLists[] = { m_pCommandList };
 	m_pResolveQueue->ExecuteCommandLists(1, pCmdLists);
-	m_pResolveQueue->Signal(m_pResolveFence, frameIndex + 1);
+	VERIFY_HR(m_pResolveQueue->Signal(m_pResolveFence, frameIndex + 1));
 	return numQueries;
 }
 
@@ -476,8 +476,8 @@ void GPUProfiler::QueryHeap::Reset(uint32 frameIndex)
 
 	m_QueryIndex					   = 0;
 	ID3D12CommandAllocator* pAllocator = m_CommandAllocators[frameIndex % m_FrameLatency];
-	pAllocator->Reset();
-	m_pCommandList->Reset(pAllocator, nullptr);
+	VERIFY_HR(pAllocator->Reset());
+	VERIFY_HR(m_pCommandList->Reset(pAllocator, nullptr));
 }
 
 bool GPUProfiler::QueryHeap::IsFrameComplete(uint64 frameIndex)
@@ -598,7 +598,7 @@ void CPUProfiler::Tick()
 
 			// Copy all events for the thread to the common array
 			// Keep track of which range of events belong to what thread
-			data.EventOffsetAndCountPerTrack[threadIndex] = ProfilerEventData::OffsetAndSize((uint32)data.Events.size(), (uint32)threadData.pTLS->Events.size());
+			data.EventOffsetAndCountPerTrack[threadIndex] = { .Offset = (uint32)data.Events.size(), .Size = (uint32)threadData.pTLS->Events.size() };
 			data.Events.insert(data.Events.end(), threadData.pTLS->Events.begin(), threadData.pTLS->Events.end());
 			threadData.pTLS->Events.clear();
 		}
@@ -636,10 +636,7 @@ void CPUProfiler::RegisterThread(const char* pName)
 	{
 		PWSTR pDescription = nullptr;
 		if (SUCCEEDED(::GetThreadDescription(GetCurrentThread(), &pDescription)))
-		{
-			size_t converted = 0;
 			WideCharToMultiByte(CP_UTF8, 0, pDescription, (int)wcslen(pDescription), data.Name, ARRAYSIZE(data.Name), nullptr, nullptr);
-		}
 	}
 
 	data.ThreadID = GetCurrentThreadId();

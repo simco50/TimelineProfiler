@@ -88,7 +88,7 @@ struct HUDContext
 	struct SelectedStatData
 	{
 		StringHash Hash		  = {};
-		bool	   IsCPUEvent = 0;
+		bool	   IsCPUEvent = false;
 		uint32	   NumSamples = 0;
 
 		float MovingAverageTime = 0;

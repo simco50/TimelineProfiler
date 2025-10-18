@@ -1,5 +1,11 @@
 #pragma once
 
+#ifndef WITH_PROFILING
+#define WITH_PROFILING 1
+#endif
+
+#if WITH_PROFILING
+
 #include <algorithm>
 #include <array>
 #include <assert.h>
@@ -26,6 +32,7 @@
 #define CONCAT_IMPL(x, y)  x##y
 #define MACRO_CONCAT(x, y) CONCAT_IMPL(x, y)
 
+// Basic types
 using uint64 = uint64_t;
 using uint32 = uint32_t;
 using uint16 = uint16_t;
@@ -39,6 +46,7 @@ using StaticArray = std::array<T, Size>;
 template <typename K, typename V>
 using HashMap = std::unordered_map<K, V>;
 
+// Forward declare D3D12 types
 struct ID3D12CommandList;
 struct ID3D12GraphicsCommandList;
 struct ID3D12CommandQueue;
@@ -51,16 +59,10 @@ using WinHandle = void*;
 
 struct URange
 {
-	uint32 Begin;
-	uint32 End;
+	uint32 Begin = 0;
+	uint32 End = 0;
 	uint32 GetLength() const { return End - Begin; }
 };
-
-#ifndef WITH_PROFILING
-#define WITH_PROFILING 1
-#endif
-
-#if WITH_PROFILING
 
 /*
 	General
@@ -242,7 +244,7 @@ public:
 	{
 	}
 
-	Span<const ProfilerEvent> GetEvents() const { return Span<const ProfilerEvent>(Events.data(), NumEvents); }
+	Span<const ProfilerEvent> GetEvents() const { return { Events.data(), NumEvents }; }
 	Span<const ProfilerEvent> GetEvents(uint32 trackIndex) const { return trackIndex < EventOffsetAndCountPerTrack.size() && EventOffsetAndCountPerTrack[trackIndex].Size > 0 ? Span<const ProfilerEvent>(&Events[EventOffsetAndCountPerTrack[trackIndex].Offset], EventOffsetAndCountPerTrack[trackIndex].Size) : Span<const ProfilerEvent>(); }
 
 private:
@@ -304,7 +306,7 @@ public:
 	void Tick();
 
 	// Notify profiler that these commandlists are executed on a particular queue
-	void ExecuteCommandLists(ID3D12CommandQueue* pQueue, Span<ID3D12CommandList*> commandLists);
+	void ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3D12CommandList*> commandLists);
 
 	void SetPaused(bool paused) { m_PauseQueued = paused; }
 
@@ -326,7 +328,7 @@ public:
 	{
 		uint32 end	 = m_FrameToReadback;
 		uint32 begin = m_FrameIndex < m_EventHistorySize ? 0 : m_FrameIndex - (uint32)m_EventHistorySize;
-		return URange(begin, end);
+		return { .Begin = begin, .End = end };
 	}
 
 	const ProfilerEventData& GetEventData(uint32 frameIndex) const
@@ -402,11 +404,11 @@ private:
 	{
 		struct Query
 		{
-			uint32 QueryIndex : 16 = InvalidEventFlag; ///< The index into the query heap
-			uint32 EventIndex : 16 = InvalidEventFlag; ///< The ProfilerEvent index. 0xFFFE is it is an "EndEvent"
-
 			static constexpr uint32 EndEventFlag	 = 0xFFFE;
 			static constexpr uint32 InvalidEventFlag = 0xFFFF;
+			
+			uint32 QueryIndex : 16 = InvalidEventFlag; ///< The index into the query heap
+			uint32 EventIndex : 16 = InvalidEventFlag; ///< The ProfilerEvent index. 0xFFFE is it is an "EndEvent"
 		};
 		static_assert(sizeof(Query) == sizeof(uint32));
 		GPUProfiler*	   pProfiler	= nullptr;
@@ -446,7 +448,7 @@ private:
 	using ActiveEventStack					= FixedStack<CommandListState::Query, MAX_EVENT_DEPTH>;
 	Array<ActiveEventStack>				 m_QueueEventStack; ///< Stack of active events for each command queue
 	Array<QueueInfo>					 m_Queues;			///< All registered queues
-	HashMap<ID3D12CommandQueue*, uint32> m_QueueIndexMap;	///< Map from command queue to index
+	HashMap<const ID3D12CommandQueue*, uint32> m_QueueIndexMap;	///< Map from command queue to index
 	GPUProfilerCallbacks				 m_EventCallback;
 };
 
@@ -543,7 +545,7 @@ public:
 	{
 		uint32 begin = m_FrameIndex - std::min(m_FrameIndex, m_HistorySize) + 1;
 		uint32 end	 = m_FrameIndex;
-		return URange(begin, end);
+		return { .Begin = begin, .End = end };
 	}
 
 	const ProfilerEventData& GetEventData(uint32 frameIndex) const
@@ -582,7 +584,7 @@ private:
 
 	CPUProfilerCallbacks m_EventCallback;
 
-	std::mutex		  m_ThreadDataLock; ///<Mutex for accesing thread data
+	std::mutex		  m_ThreadDataLock; ///<Mutex for accessing thread data
 	Array<ThreadData> m_ThreadData;		///<Data describing each registered thread
 
 	ProfilerEventData* m_pEventData	   = nullptr; ///<Per-frame data
