@@ -543,13 +543,13 @@ void CPUProfiler::BeginEvent(const char* pName, uint32 color, const char* pFileP
 	if (m_Paused)
 		return;
 
-	// Record new event on TLS
-	TLS& tls			  = GetTLS();
-	tls.EventStack.Push() = (uint32)tls.Events.size();
+	// Record new event
+	EventTrack& track	  = GetCurrentThreadTrack();
+	track.EventStack.Push() = (uint32)track.Events.size();
 
-	ProfilerEvent& newEvent = tls.Events.emplace_back();
-	newEvent.Depth			= tls.EventStack.GetSize();
-	newEvent.ThreadIndex	= tls.ThreadIndex;
+	ProfilerEvent& newEvent = track.Events.emplace_back();
+	newEvent.Depth			= track.EventStack.GetSize();
+	newEvent.ThreadIndex	= track.Index;
 	newEvent.pName			= GetData().Allocator.String(pName);
 	newEvent.pFilePath		= pFilePath;
 	newEvent.LineNumber		= lineNumber;
@@ -570,13 +570,14 @@ void CPUProfiler::EndEvent()
 		return;
 
 	// End and pop an event of the stack
-	TLS& tls = GetTLS();
+	EventTrack& track = GetCurrentThreadTrack();
 
-	gAssert(tls.EventStack.GetSize() > 0, "Event mismatch. Called EndEvent more than BeginEvent");
-	uint32		   eventIndex = tls.EventStack.Pop();
-	ProfilerEvent& event	  = tls.Events[eventIndex];
+	gAssert(track.EventStack.GetSize() > 0, "Event mismatch. Called EndEvent more than BeginEvent");
+	uint32		   eventIndex = track.EventStack.Pop();
+	ProfilerEvent& event	  = track.Events[eventIndex];
 	QueryPerformanceCounter((LARGE_INTEGER*)(&event.TicksEnd));
 }
+
 
 // Process the last frame and advance
 void CPUProfiler::Tick()
@@ -598,20 +599,20 @@ void CPUProfiler::Tick()
 		// Collect recorded events from all threads
 		ProfilerEventData& data = GetData();
 		data.NumEvents			= (uint32)data.Events.size();
-		data.EventOffsetAndCountPerTrack.resize(m_ThreadData.size());
+		data.EventOffsetAndCountPerTrack.resize(m_Tracks.size());
 		data.Events.clear();
-		for (uint32 threadIndex = 0; threadIndex < (uint32)m_ThreadData.size(); ++threadIndex)
+		for (uint32 threadIndex = 0; threadIndex < (uint32)m_Tracks.size(); ++threadIndex)
 		{
-			ThreadData& threadData = m_ThreadData[threadIndex];
+			EventTrack& threadData = m_Tracks[threadIndex];
 
 			// Check if all threads have ended all open sample events
-			gAssert(threadData.pTLS->EventStack.GetSize() == 0, "Thread %s has not closed all events", threadData.Name);
+			gAssert(threadData.EventStack.GetSize() == 0, "Thread %s has not closed all events", threadData.Name);
 
 			// Copy all events for the thread to the common array
 			// Keep track of which range of events belong to what thread
-			data.EventOffsetAndCountPerTrack[threadIndex] = { .Offset = (uint32)data.Events.size(), .Size = (uint32)threadData.pTLS->Events.size() };
-			data.Events.insert(data.Events.end(), threadData.pTLS->Events.begin(), threadData.pTLS->Events.end());
-			threadData.pTLS->Events.clear();
+			data.EventOffsetAndCountPerTrack[threadIndex] = { .Offset = (uint32)data.Events.size(), .Size = (uint32)threadData.Events.size() };
+			data.Events.insert(data.Events.end(), threadData.Events.begin(), threadData.Events.end());
+			threadData.Events.clear();
 		}
 	}
 
@@ -626,33 +627,46 @@ void CPUProfiler::Tick()
 	BeginEvent("CPU Frame");
 }
 
-// Register a new thread
-void CPUProfiler::RegisterThread(const char* pName)
-{
-	TLS& tls = GetTLSUnsafe();
-	gAssert(!tls.IsInitialized);
-	tls.IsInitialized = true;
-	
-	std::scoped_lock lock(m_ThreadDataLock);
-	
-	tls.ThreadIndex	 = (uint32)m_ThreadData.size();
-	ThreadData& data = m_ThreadData.emplace_back();
 
-	// If the name is not provided, retrieve it using GetThreadDescription()
-	if (pName)
+// Register a new thread
+int CPUProfiler::RegisterThread(const char* pName)
+{
+	int& threadIndex = GetCurrentThreadIndex();
+
+	const char* pLocalName = pName;
+	char name[256]{};
+	if (!pName)
 	{
-		strcpy_s(data.Name, ARRAYSIZE(data.Name), pName);
+		// If the name is not provided, retrieve it using GetThreadDescription()
+		PWSTR pDescription = nullptr;
+		if (SUCCEEDED(::GetThreadDescription(GetCurrentThread(), &pDescription)))
+			WideCharToMultiByte(CP_UTF8, 0, pDescription, (int)wcslen(pDescription), name, ARRAYSIZE(name), nullptr, nullptr);
+		pLocalName = name;
+	}
+
+	if (threadIndex == -1)
+	{
+		threadIndex = RegisterTrack(pLocalName, GetCurrentThreadId());
 	}
 	else
 	{
-		PWSTR pDescription = nullptr;
-		if (SUCCEEDED(::GetThreadDescription(GetCurrentThread(), &pDescription)))
-			WideCharToMultiByte(CP_UTF8, 0, pDescription, (int)wcslen(pDescription), data.Name, ARRAYSIZE(data.Name), nullptr, nullptr);
+		strcpy_s(m_Tracks[threadIndex].Name, pLocalName);
 	}
+	return threadIndex;
+}
 
-	data.ThreadID = GetCurrentThreadId();
-	data.pTLS	  = &tls;
-	data.Index	  = (uint32)m_ThreadData.size() - 1;
+
+// Register a new track
+int CPUProfiler::RegisterTrack(const char* pName, uint32 id)
+{
+	std::scoped_lock lock(m_ThreadDataLock);
+
+	EventTrack& data = m_Tracks.emplace_back();
+	strcpy_s(data.Name, ARRAYSIZE(data.Name), pName);
+	data.ID	   = id;
+	data.Index = (uint32)m_Tracks.size() - 1;
+
+	return data.Index;
 }
 
 #endif

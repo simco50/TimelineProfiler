@@ -282,11 +282,7 @@ struct GPUProfilerCallbacks
 class GPUProfiler
 {
 public:
-	void Initialize(
-		ID3D12Device*			  pDevice,
-		Span<ID3D12CommandQueue*> queues,
-		uint32					  sampleHistory,
-		uint32					  frameLatency);
+	void Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> queues, uint32 sampleHistory, uint32 frameLatency);
 
 	void Shutdown();
 
@@ -523,26 +519,20 @@ public:
 	void Tick();
 
 	// Initialize a thread with an optional name
-	void RegisterThread(const char* pName = nullptr);
+	int RegisterThread(const char* pName = nullptr);
 
-	// Thread-local storage to keep track of current depth and event stack
-	struct TLS
+	// Register a new track
+	int RegisterTrack(const char* pName, uint32 id);
+
+	struct EventTrack
 	{
-		static constexpr int MAX_STACK_DEPTH = 32;
-
+		char								Name[128]{};			///< Name
+		uint32								ID				= 0;	///< ThreadID (or generic identifier)
+		uint32								Index			= 0;	///< Index in Tracks Array
+		
+		static constexpr int				MAX_STACK_DEPTH = 32;
 		FixedStack<uint32, MAX_STACK_DEPTH> EventStack;
-		uint32								ThreadIndex	  = 0;
-		bool								IsInitialized = false;
 		Array<ProfilerEvent>				Events;
-	};
-
-	// Structure describing a registered thread
-	struct ThreadData
-	{
-		char   Name[128]{};
-		uint32 ThreadID = 0;
-		uint32 Index	= 0;
-		TLS*   pTLS		= nullptr;
 	};
 
 	URange GetFrameRange() const
@@ -558,28 +548,27 @@ public:
 		return GetData(frameIndex);
 	}
 
-	Span<const ThreadData> GetThreads() const { return m_ThreadData; }
+	Span<const EventTrack> GetTracks() const { return m_Tracks; }
 
 	void SetEventCallback(const CPUProfilerCallbacks& inCallbacks) { m_EventCallback = inCallbacks; }
 	void SetPaused(bool paused) { m_QueuedPaused = paused; }
 	bool IsPaused() const { return m_Paused; }
 
 private:
-	// Retrieve thread-local storage without initialization
-	static TLS& GetTLSUnsafe()
+	int& GetCurrentThreadIndex()
 	{
-		static thread_local TLS tls;
-		return tls;
+		static thread_local int index = -1;
+		return index;
 	}
 
-	// Retrieve the thread-local storage
-	TLS& GetTLS()
+	EventTrack& GetCurrentThreadTrack()
 	{
-		TLS& tls = GetTLSUnsafe();
-		if (!tls.IsInitialized)
-			RegisterThread();
-		return tls;
+		int index = GetCurrentThreadIndex();
+		if (index == -1)
+			index = RegisterThread();
+		return m_Tracks[GetCurrentThreadIndex()];
 	}
+
 
 	// Return the sample data of the current frame
 	ProfilerEventData&		 GetData() { return GetData(m_FrameIndex); }
@@ -587,16 +576,14 @@ private:
 	const ProfilerEventData& GetData(uint32 frameIndex) const { return m_pEventData[frameIndex % m_HistorySize]; }
 
 	CPUProfilerCallbacks m_EventCallback;
-
-	std::mutex		  m_ThreadDataLock; ///<Mutex for accessing thread data
-	Array<ThreadData> m_ThreadData;		///<Data describing each registered thread
-
-	ProfilerEventData* m_pEventData	   = nullptr; ///<Per-frame data
-	uint32			   m_HistorySize   = 0;		  ///<History size
-	uint32			   m_FrameIndex	   = 0;		  ///<The current frame index
-	bool			   m_Paused		   = false;	  ///<The current pause state
-	bool			   m_QueuedPaused  = false;	  ///<The queued pause state
-	bool			   m_IsInitialized = false;
+	std::mutex			 m_ThreadDataLock; ///< Mutex for accessing thread data
+	Array<EventTrack>	 m_Tracks;
+	ProfilerEventData*	 m_pEventData	 = nullptr; ///< Per-frame data
+	uint32				 m_HistorySize	 = 0;		///< History size
+	uint32				 m_FrameIndex	 = 0;		///< The current frame index
+	bool				 m_Paused		 = false;	///< The current pause state
+	bool				 m_QueuedPaused	 = false;	///< The queued pause state
+	bool				 m_IsInitialized = false;
 };
 
 // Helper RAII-style structure to push and pop a CPU sample region

@@ -185,9 +185,9 @@ void BeginTrace(const char* pPath, TraceContext& context)
 	{
 		context.TraceStream << Sprintf("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":0,\"tid\":%d,\"args\":{\"name\":\"%s\"}},\n", queue.Index, queue.Name);
 	}
-	for (const CPUProfiler::ThreadData& thread : gCPUProfiler.GetThreads())
+	for (const CPUProfiler::EventTrack& track : gCPUProfiler.GetTracks())
 	{
-		context.TraceStream << Sprintf("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":%d,\"args\":{\"name\":\"%s\"}},\n", thread.ThreadID, thread.Name);
+		context.TraceStream << Sprintf("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":%d,\"args\":{\"name\":\"%s\"}},\n", track.ID, track.Name);
 	}
 }
 
@@ -208,10 +208,10 @@ void UpdateTrace(TraceContext& context)
 	}
 
 	URange cpuRange = gCPUProfiler.GetFrameRange();
-	for (const CPUProfiler::ThreadData& thread : gCPUProfiler.GetThreads())
+	for (const CPUProfiler::EventTrack& track : gCPUProfiler.GetTracks())
 	{
-		for (const ProfilerEvent& event : gCPUProfiler.GetEventData(cpuRange.End - 1).GetEvents(thread.Index))
-			context.TraceStream << Sprintf("{\"pid\":1,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", thread.ThreadID, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
+		for (const ProfilerEvent& event : gCPUProfiler.GetEventData(cpuRange.End - 1).GetEvents(track.Index))
+			context.TraceStream << Sprintf("{\"pid\":1,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", track.ID, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
 	}
 }
 
@@ -521,17 +521,17 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 		pDraw->AddLine(ImVec2(timelineRect.Min.x, cursor.y), ImVec2(timelineRect.Max.x, cursor.y), ImColor(style.BGTextColor), 4);
 
 		// Draw each CPU thread track
-		Span<const CPUProfiler::ThreadData> threads = gCPUProfiler.GetThreads();
-		for (uint32 threadIndex = 0; threadIndex < (uint32)threads.size(); ++threadIndex)
+		Span<const CPUProfiler::EventTrack> tracks = gCPUProfiler.GetTracks();
+		for (uint32 trackIndex = 0; trackIndex < (uint32)tracks.size(); ++trackIndex)
 		{
 			PROFILE_CPU_SCOPE("CPU Track");
 
 			// Add thread name for track
-			const CPUProfiler::ThreadData& thread = threads[threadIndex];
+			const CPUProfiler::EventTrack& track = tracks[trackIndex];
 			const char*					   pHeaderText;
-			ImFormatStringToTempBuffer(&pHeaderText, nullptr, "%s [%d]", thread.Name, thread.ThreadID);
+			ImFormatStringToTempBuffer(&pHeaderText, nullptr, "%s [%d]", track.Name, track.ID);
 
-			if (TrackHeader(pHeaderText, ImGui::GetID(&thread)))
+			if (TrackHeader(pHeaderText, ImGui::GetID(&track)))
 			{
 				uint32 trackDepth = 0;
 
@@ -542,7 +542,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				*/
 				for (uint32 frameIndex = cpuRange.Begin; frameIndex < cpuRange.End; ++frameIndex)
 				{
-					DrawTrack(gCPUProfiler.GetEventData(frameIndex).GetEvents(thread.Index), frameIndex, trackDepth, true);
+					DrawTrack(gCPUProfiler.GetEventData(frameIndex).GetEvents(track.Index), frameIndex, trackDepth, true);
 				}
 				cursor.y += trackDepth * style.BarHeight;
 			}
