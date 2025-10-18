@@ -27,6 +27,13 @@
 #pragma comment(lib, "dxguid.lib")
 #endif
 
+//#define SUPERLUMINAL_API
+#ifdef SUPERLUMINAL_API
+#include <PerformanceAPI_loader.h>
+static PerformanceAPI_Functions sSuperluminal{};
+PerformanceAPI_ModuleHandle		sSuperluminalHandle = nullptr;
+#endif
+
 // Config for example app
 static const int APP_NUM_FRAMES_IN_FLIGHT = 2;
 static const int APP_NUM_BACK_BUFFERS = 2;
@@ -184,6 +191,19 @@ int main(int, char**)
     gCPUProfiler.Initialize(5);
     Span<ID3D12CommandQueue*> queues(&g_pd3dCommandQueue, 1);
     gGPUProfiler.Initialize(g_pd3dDevice, queues, 5, 2);
+
+#ifdef SUPERLUMINAL_API
+	sSuperluminalHandle = PerformanceAPI_LoadFrom(L"C:\\Program Files\\Superluminal\\Performance\\API\\dll\\x64\\PerformanceAPI.dll", &sSuperluminal);
+	if (sSuperluminalHandle)
+	{
+		CPUProfilerCallbacks callbacks{
+			.OnEventBegin = [](const char* pName, void* /*pUserData*/) { sSuperluminal.BeginEvent(pName, nullptr, PERFORMANCEAPI_DEFAULT_COLOR); },
+			.OnEventEnd = [](void* /*pUserData*/) { sSuperluminal.EndEvent(); },
+			.pUserData	  = nullptr
+		};
+		gCPUProfiler.SetEventCallback(callbacks);
+    }
+#endif
 
     // Before 1.91.6: our signature was using a single descriptor. From 1.92, specifying SrvDescriptorAllocFn/SrvDescriptorFreeFn will be required to benefit from new features.
     //ImGui_ImplDX12_Init(g_pd3dDevice, APP_NUM_FRAMES_IN_FLIGHT, DXGI_FORMAT_R8G8B8A8_UNORM, g_pd3dSrvDescHeap, g_pd3dSrvDescHeap->GetCPUDescriptorHandleForHeapStart(), g_pd3dSrvDescHeap->GetGPUDescriptorHandleForHeapStart());
