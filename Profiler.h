@@ -157,34 +157,34 @@ using WinHandle = void*;
 #endif
 
 template <typename T, uint32 N>
-struct FixedStack
+struct FixedArray
 {
 public:
 	T& Pop()
 	{
-		gAssert(Depth > 0);
-		--Depth;
-		return StackData[Depth];
+		gAssert(Length > 0);
+		--Length;
+		return Data[Length];
 	}
 
 	T& Push()
 	{
-		Depth++;
-		gAssert(Depth < N);
-		return StackData[Depth - 1];
+		Length++;
+		gAssert(Length < N);
+		return Data[Length - 1];
 	}
 
 	T& Top()
 	{
-		gAssert(Depth > 0);
-		return StackData[Depth - 1];
+		gAssert(Length > 0);
+		return Data[Length - 1];
 	}
 
-	uint32 GetSize() const { return Depth; }
+	uint32 GetSize() const { return Length; }
 
 private:
-	uint32 Depth = 0;
-	T	   StackData[N]{};
+	uint32			  Length = 0;
+	StaticArray<T, N> Data{};
 };
 
 // Simple Linear Allocator
@@ -470,7 +470,7 @@ private:
 	HashMap<ID3D12CommandList*, CommandListState*> m_CommandListMap;		///< Maps commandlist to index
 
 	static constexpr uint32 MAX_EVENT_DEPTH = 32;
-	using ActiveEventStack					= FixedStack<CommandListState::Query, MAX_EVENT_DEPTH>;
+	using ActiveEventStack					= FixedArray<CommandListState::Query, MAX_EVENT_DEPTH>;
 	Array<ActiveEventStack>				 m_QueueEventStack; ///< Stack of active events for each command queue
 	Array<QueueInfo>					 m_Queues;			///< All registered queues
 	HashMap<const ID3D12CommandQueue*, uint32> m_QueueIndexMap;	///< Map from command queue to index
@@ -556,7 +556,7 @@ public:
 		uint32								Index			= 0;	///< Index in Tracks Array
 		
 		static constexpr int				MAX_STACK_DEPTH = 32;
-		FixedStack<uint32, MAX_STACK_DEPTH> EventStack;
+		FixedArray<uint32, MAX_STACK_DEPTH> EventStack;
 		Array<ProfilerEvent>				Events;
 	};
 
