@@ -4,6 +4,7 @@
 #if WITH_PROFILING
 
 #include "IconsFontAwesome4.h"
+#include "IconsFontAwesome4_data.h"
 #include <fstream>
 #include <imgui_internal.h>
 
@@ -80,6 +81,7 @@ struct StyleOptions
 struct HUDContext
 {
 	StyleOptions Style;
+	ImFont*		 IconFont = nullptr;
 
 	float  TimelineScale  = 5.0f;
 	ImVec2 TimelineOffset = ImVec2(0.0f, 0.0f);
@@ -771,6 +773,14 @@ void DrawProfilerHUD()
 {
 	HUDContext&	  context = Context();
 	StyleOptions& style	  = context.Style;
+
+	if (!context.IconFont)
+	{
+		ImFontConfig fontConfig;
+		fontConfig.MergeMode			   = true;
+		static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
+		context.IconFont				   = ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF(font_awesome_compressed_data, font_awesome_compressed_size, 15.0f, &fontConfig, icon_ranges);
+	}
 
 	if (gCPUProfiler.IsPaused())
 		ImGui::Text("Paused");
