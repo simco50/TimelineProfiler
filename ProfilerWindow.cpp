@@ -208,17 +208,10 @@ void UpdateTrace(TraceContext& context)
 	QueryPerformanceFrequency((LARGE_INTEGER*)&frequency);
 	const float TicksToMs = 1000.0f / frequency;
 
-	URange gpuRange = gGPUProfiler.GetFrameRange();
-	for (const GPUProfiler::QueueInfo& queue : gGPUProfiler.GetQueues())
-	{
-		for (const ProfilerEvent& event : gGPUProfiler.GetEventData(gpuRange.End - 1).GetEvents(queue.Index))
-			context.TraceStream << Sprintf("{\"pid\":0,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", queue.Index, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
-	}
-
 	URange cpuRange = gCPUProfiler.GetFrameRange();
 	for (const CPUProfiler::EventTrack& track : gCPUProfiler.GetTracks())
 	{
-		for (const ProfilerEvent& event : track.GetFrameData(cpuRange.End - 1).GetEvents(track.Index))
+		for (const ProfilerEvent& event : track.GetFrameData(cpuRange.End - 1).GetEvents())
 			context.TraceStream << Sprintf("{\"pid\":1,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", track.ID, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
 	}
 }
@@ -308,12 +301,12 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 
 		cursor.y += style.BarHeight;
 
-		/*
+#if 0
 		// Add dark shade background for every even frame
 		int frameNr = 0;
 		for (uint32 i = cpuRange.Begin; i < cpuRange.End; ++i)
 		{
-			Span<const ProfilerEvent> events = gCPUProfiler.GetEventData(i).GetEvents();
+			Span<const ProfilerEvent> events = gCPUProfiler.GetTracks()[0].Events[i].GetEvents();
 			if (events.size() > 0 && frameNr++ % 2 == 0)
 			{
 				float beginOffset = (events[0].TicksBegin - beginAnchor) * TicksToPixels;
@@ -321,7 +314,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				pDraw->AddRectFilled(ImVec2(cursor.x + beginOffset, timelineRect.Min.y), ImVec2(cursor.x + endOffset, timelineRect.Max.y), ImColor(1.0f, 1.0f, 1.0f, 0.05f));
 			}
 		}
-		*/
+#endif
 
 		ImGui::PushClipRect(timelineRect.Min + ImVec2(0, style.BarHeight), timelineRect.Max, true);
 

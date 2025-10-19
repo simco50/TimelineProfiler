@@ -189,7 +189,7 @@ int main(int, char**)
 
     gCPUProfiler.Initialize(5);
     Span<ID3D12CommandQueue*> queues(&g_pd3dCommandQueue, 1);
-    gGPUProfiler.Initialize(g_pd3dDevice, queues, 5, 2);
+    gGPUProfiler.Initialize(g_pd3dDevice, queues, 2);
 
 #ifdef SUPERLUMINAL_API
 	sSuperluminalHandle = PerformanceAPI_LoadFrom(L"C:\\Program Files\\Superluminal\\Performance\\API\\dll\\x64\\PerformanceAPI.dll", &sSuperluminal);

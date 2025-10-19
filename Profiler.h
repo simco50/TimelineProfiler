@@ -269,7 +269,6 @@ public:
 	}
 
 	Span<const ProfilerEvent> GetEvents() const { return { Events.data(), NumEvents }; }
-	Span<const ProfilerEvent> GetEvents(uint32 trackIndex) const { return trackIndex < EventOffsetAndCountPerTrack.size() && EventOffsetAndCountPerTrack[trackIndex].Size > 0 ? Span<const ProfilerEvent>(&Events[EventOffsetAndCountPerTrack[trackIndex].Offset], EventOffsetAndCountPerTrack[trackIndex].Size) : Span<const ProfilerEvent>(); }
 
 private:
 	friend class CPUProfiler;
@@ -282,7 +281,6 @@ private:
 	};
 
 	LinearAllocator		 Allocator;					  ///< Scratch allocator for frame
-	Array<OffsetAndSize> EventOffsetAndCountPerTrack; ///< Span of events for each track
 	Array<ProfilerEvent> Events;					  ///< Event storage for frame
 	uint32				 NumEvents = 0;				  ///< Total number of recorded events
 };
@@ -307,7 +305,7 @@ struct GPUProfilerCallbacks
 class GPUProfiler
 {
 public:
-	void Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> queues, uint32 sampleHistory, uint32 frameLatency);
+	void Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> queues, uint32 frameLatency);
 
 	void Shutdown();
 
@@ -343,19 +341,6 @@ public:
 	};
 
 	Span<const QueueInfo> GetQueues() const { return m_Queues; }
-
-	URange GetFrameRange() const
-	{
-		uint32 end	 = m_FrameToReadback;
-		uint32 begin = m_FrameIndex < m_EventHistorySize ? 0 : m_FrameIndex - (uint32)m_EventHistorySize;
-		return { .Begin = begin, .End = end };
-	}
-
-	const ProfilerEventData& GetEventData(uint32 frameIndex) const
-	{
-		gBoundCheck(frameIndex, GetFrameRange().Begin, GetFrameRange().End);
-		return GetSampleFrame(frameIndex);
-	}
 
 	void SetEventCallback(const GPUProfilerCallbacks& inCallbacks) { m_EventCallback = inCallbacks; }
 
@@ -401,10 +386,6 @@ private:
 		uint64						   m_LastCompletedFence = 0;	   ///< Last finish fence value
 	};
 
-	const ProfilerEventData& GetSampleFrame(uint32 frameIndex) const { return m_pEventData[frameIndex % m_EventHistorySize]; }
-	ProfilerEventData&		 GetSampleFrame(uint32 frameIndex) { return m_pEventData[frameIndex % m_EventHistorySize]; }
-	ProfilerEventData&		 GetSampleFrame() { return GetSampleFrame(m_FrameIndex); }
-
 	// Data for a single frame of GPU queries. One for each frame latency
 	struct QueryData
 	{
@@ -417,6 +398,7 @@ private:
 		};
 		static_assert(sizeof(QueryPair) == sizeof(uint32));
 		Array<QueryPair> Pairs;
+		ProfilerEventData Events;
 	};
 	QueryData& GetQueryData(uint32 frameIndex) { return m_pQueryData[frameIndex % m_FrameLatency]; }
 	QueryData& GetQueryData() { return GetQueryData(m_FrameIndex); }
@@ -458,8 +440,6 @@ private:
 	bool m_IsPaused		 = false;
 	bool m_PauseQueued	 = false;
 
-	ProfilerEventData*		  m_pEventData		 = nullptr; ///< Data containing all resulting events. 1 per frame history
-	uint32					  m_EventHistorySize = 0;		///< Number of frames to keep track of
 	std::atomic<uint32>		  m_EventIndex		 = 0;		///< Current event index
 	QueryData*				  m_pQueryData		 = nullptr; ///< Data containing all intermediate query event data. 1 per frame latency
 	uint32					  m_FrameLatency	 = 0;		///< Max number of in-flight GPU frames
