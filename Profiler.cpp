@@ -78,7 +78,10 @@ void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> qu
 		{
 			GetHeap(queueInfo.QueryHeapIndex).Initialize(pDevice, pQueue, QueryHeap::cMaxNumQueries, frameLatency);
 		}
+
+		queueInfo.TrackIndex = gCPUProfiler.RegisterTrack(queueInfo.Name, queueInfo.Index);
 	}
+
 
 	// Maximum number of events is the number of queries is the total capacity of all query heaps divided by 2 (a pair of queries per event)
 	int queryCapacity = 0;
@@ -213,6 +216,8 @@ void GPUProfiler::Tick()
 
 			// Invalidate
 			queryRange = {};
+
+			gCPUProfiler.AddEvent(queue.TrackIndex, event, m_FrameToReadback);
 		}
 
 		// Sort events by queue and make groups per queue for fast per-queue event iteration.
@@ -505,14 +510,12 @@ bool GPUProfiler::QueryHeap::IsFrameComplete(uint64 frameIndex)
 
 void CPUProfiler::Initialize(uint32 historySize)
 {
-	m_pEventData	= new ProfilerEventData[historySize];
 	m_HistorySize	= historySize;
 	m_IsInitialized = true;
 }
 
 void CPUProfiler::Shutdown()
 {
-	delete[] m_pEventData;
 }
 
 // Begin a new CPU event on the current thread
@@ -529,12 +532,13 @@ void CPUProfiler::BeginEvent(const char* pName, uint32 color, const char* pFileP
 
 	// Record new event
 	EventTrack& track		= GetCurrentThreadTrack();
-	track.EventStack.Push() = (uint32)track.Events.size();
+	track.EventStack.Push() = (uint32)track.GetFrameData(m_FrameIndex).Events.size();
 
-	ProfilerEvent& newEvent = track.Events.emplace_back();
+	track.GetFrameData(m_FrameIndex).NumEvents++;
+	ProfilerEvent& newEvent = track.GetFrameData(m_FrameIndex).Events.emplace_back();
 	newEvent.Depth			= track.EventStack.GetSize();
 	newEvent.ThreadIndex	= track.Index;
-	newEvent.pName			= GetData().Allocator.String(pName);
+	newEvent.pName			= track.GetFrameData(m_FrameIndex).Allocator.String(pName);
 	newEvent.pFilePath		= pFilePath;
 	newEvent.LineNumber		= lineNumber;
 	newEvent.Color			= color == 0 ? ColorFromString(pName, 0.5f, 1.0f) : color;
@@ -558,7 +562,7 @@ void CPUProfiler::EndEvent()
 
 	gAssert(track.EventStack.GetSize() > 0, "Event mismatch. Called EndEvent more than BeginEvent");
 	uint32		   eventIndex = track.EventStack.Pop();
-	ProfilerEvent& event	  = track.Events[eventIndex];
+	ProfilerEvent& event	  = track.GetFrameData(m_FrameIndex).Events[eventIndex];
 	QueryPerformanceCounter((LARGE_INTEGER*)(&event.TicksEnd));
 }
 
@@ -570,42 +574,24 @@ void CPUProfiler::Tick()
 		return;
 
 	m_Paused = m_QueuedPaused;
-	if (m_Paused || !m_pEventData)
+	if (m_Paused)
 		return;
 
 	// End the "CPU Frame" event (except on frame 0)
 	if (m_FrameIndex)
 		EndEvent();
 
-	{
-		std::scoped_lock lock(m_ThreadDataLock);
-
-		// Collect recorded events from all threads
-		ProfilerEventData& data = GetData();
-		data.NumEvents			= (uint32)data.Events.size();
-		data.EventOffsetAndCountPerTrack.resize(m_Tracks.size());
-		data.Events.clear();
-		for (uint32 threadIndex = 0; threadIndex < (uint32)m_Tracks.size(); ++threadIndex)
-		{
-			EventTrack& threadData = m_Tracks[threadIndex];
-
-			// Check if all threads have ended all open sample events
-			gAssert(threadData.EventStack.GetSize() == 0, "Thread %s has not closed all events", threadData.Name);
-
-			// Copy all events for the thread to the common array
-			// Keep track of which range of events belong to what thread
-			data.EventOffsetAndCountPerTrack[threadIndex] = { .Offset = (uint32)data.Events.size(), .Size = (uint32)threadData.Events.size() };
-			data.Events.insert(data.Events.end(), threadData.Events.begin(), threadData.Events.end());
-			threadData.Events.clear();
-		}
-	}
-
 	// Advance the frame and reset its data
 	++m_FrameIndex;
 
-	ProfilerEventData& newData = GetData();
-	newData.Allocator.Reset();
-	newData.NumEvents = 0;
+	std::scoped_lock lock(m_ThreadDataLock);
+	for (uint32 threadIndex = 0; threadIndex < (uint32)m_Tracks.size(); ++threadIndex)
+	{
+		ProfilerEventData& eventData = m_Tracks[threadIndex].GetFrameData(m_FrameIndex);
+		eventData.Events.clear();
+		eventData.NumEvents = 0;
+		eventData.Allocator.Reset();
+	}
 
 	// Begin a "CPU Frame" event
 	BeginEvent("CPU Frame");
@@ -649,6 +635,9 @@ int CPUProfiler::RegisterTrack(const char* pName, uint32 id)
 	strcpy_s(data.Name, ARRAYSIZE(data.Name), pName);
 	data.ID	   = id;
 	data.Index = (uint32)m_Tracks.size() - 1;
+
+	data.Events = new ProfilerEventData[m_HistorySize];
+	data.NumFrames = m_HistorySize;
 
 	return data.Index;
 }

@@ -156,6 +156,7 @@ using WinHandle = void*;
 
 #endif
 
+
 template <typename T, uint32 N>
 struct FixedArray
 {
@@ -286,6 +287,7 @@ private:
 	uint32				 NumEvents = 0;				  ///< Total number of recorded events
 };
 
+
 //-----------------------------------------------------------------------------
 // [SECTION] GPU Profiler
 //-----------------------------------------------------------------------------
@@ -337,6 +339,7 @@ public:
 		uint64				GPUFrequency		= 0;	   ///< The GPU tick frequency
 		uint32				Index				= 0;	   ///< Index of queue
 		uint32				QueryHeapIndex		= 0;	   ///< Query Heap index (Copy vs. Other queues)
+		uint32				TrackIndex			= 0;
 	};
 
 	Span<const QueueInfo> GetQueues() const { return m_Queues; }
@@ -539,6 +542,12 @@ public:
 	// End and pop the last pushed event on the current thread
 	void EndEvent();
 
+	void AddEvent(uint32 trackIndex, const ProfilerEvent& event, uint32 frameIndex)
+	{
+		m_Tracks[trackIndex].GetFrameData(frameIndex).Events.push_back(event);
+		m_Tracks[trackIndex].GetFrameData(frameIndex).NumEvents++;
+	}
+
 	// Resolve the last frame and advance to the next frame.
 	// Call at the START of the frame.
 	void Tick();
@@ -557,7 +566,12 @@ public:
 		
 		static constexpr int				MAX_STACK_DEPTH = 32;
 		FixedArray<uint32, MAX_STACK_DEPTH> EventStack;
-		Array<ProfilerEvent>				Events;
+
+		ProfilerEventData& GetFrameData(int frameIndex) { return Events[frameIndex % NumFrames]; }
+		const ProfilerEventData& GetFrameData(int frameIndex) const { return Events[frameIndex % NumFrames]; }
+
+		ProfilerEventData*			Events = nullptr;
+		int				   NumFrames = 0;
 	};
 
 	URange GetFrameRange() const
@@ -565,12 +579,6 @@ public:
 		uint32 begin = m_FrameIndex - std::min(m_FrameIndex, m_HistorySize) + 1;
 		uint32 end	 = m_FrameIndex;
 		return { .Begin = begin, .End = end };
-	}
-
-	const ProfilerEventData& GetEventData(uint32 frameIndex) const
-	{
-		gBoundCheck(frameIndex, GetFrameRange().Begin, GetFrameRange().End);
-		return GetData(frameIndex);
 	}
 
 	Span<const EventTrack> GetTracks() const { return m_Tracks; }
@@ -594,15 +602,9 @@ private:
 		return m_Tracks[GetCurrentThreadTrackIndex()];
 	}
 
-	// Return the sample data of the current frame
-	ProfilerEventData&		 GetData() { return GetData(m_FrameIndex); }
-	ProfilerEventData&		 GetData(uint32 frameIndex) { return m_pEventData[frameIndex % m_HistorySize]; }
-	const ProfilerEventData& GetData(uint32 frameIndex) const { return m_pEventData[frameIndex % m_HistorySize]; }
-
 	CPUProfilerCallbacks m_EventCallback;
 	std::mutex			 m_ThreadDataLock; ///< Mutex for accessing thread data
 	Array<EventTrack>	 m_Tracks;
-	ProfilerEventData*	 m_pEventData	 = nullptr; ///< Per-frame data
 	uint32				 m_HistorySize	 = 0;		///< History size
 	uint32				 m_FrameIndex	 = 0;		///< The current frame index
 	bool				 m_Paused		 = false;	///< The current pause state

@@ -218,7 +218,7 @@ void UpdateTrace(TraceContext& context)
 	URange cpuRange = gCPUProfiler.GetFrameRange();
 	for (const CPUProfiler::EventTrack& track : gCPUProfiler.GetTracks())
 	{
-		for (const ProfilerEvent& event : gCPUProfiler.GetEventData(cpuRange.End - 1).GetEvents(track.Index))
+		for (const ProfilerEvent& event : track.GetFrameData(cpuRange.End - 1).GetEvents(track.Index))
 			context.TraceStream << Sprintf("{\"pid\":1,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", track.ID, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
 	}
 }
@@ -274,7 +274,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 		uint64 beginAnchor = 0;
 		if (cpuRange.GetLength() > 0)
 		{
-			const ProfilerEventData& eventData = gCPUProfiler.GetEventData(cpuRange.Begin);
+			const ProfilerEventData& eventData = gCPUProfiler.GetTracks().front().GetFrameData(cpuRange.Begin);
 			beginAnchor						   = eventData.GetEvents().size() > 0 ? eventData.GetEvents()[0].TicksBegin : 0;
 		}
 
@@ -308,6 +308,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 
 		cursor.y += style.BarHeight;
 
+		/*
 		// Add dark shade background for every even frame
 		int frameNr = 0;
 		for (uint32 i = cpuRange.Begin; i < cpuRange.End; ++i)
@@ -320,6 +321,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				pDraw->AddRectFilled(ImVec2(cursor.x + beginOffset, timelineRect.Min.y), ImVec2(cursor.x + endOffset, timelineRect.Max.y), ImColor(1.0f, 1.0f, 1.0f, 0.05f));
 			}
 		}
+		*/
 
 		ImGui::PushClipRect(timelineRect.Min + ImVec2(0, style.BarHeight), timelineRect.Max, true);
 
@@ -499,32 +501,6 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 			return isOpen;
 		};
 
-		URange gpuRange = gGPUProfiler.GetFrameRange();
-		for (const GPUProfiler::QueueInfo& queue : gGPUProfiler.GetQueues())
-		{
-			PROFILE_CPU_SCOPE("GPU Track");
-
-			// Add thread name for track
-			if (TrackHeader(queue.Name, ImGui::GetID(&queue)))
-			{
-				uint32 trackDepth = 0;
-
-				for (uint32 frameIndex = gpuRange.Begin; frameIndex < gpuRange.End; ++frameIndex)
-				{
-					// Add a bar in the right place for each event
-					/*
-						|[=============]			|
-						|	[======]				|
-					*/
-					DrawTrack(gGPUProfiler.GetEventData(frameIndex).GetEvents(queue.Index), frameIndex, trackDepth, false);
-				}
-				cursor.y += trackDepth * style.BarHeight;
-			}
-
-			// Add vertical line to end track
-			pDraw->AddLine(ImVec2(timelineRect.Min.x, cursor.y), ImVec2(timelineRect.Max.x, cursor.y), ImColor(style.BGTextColor));
-		}
-
 		// Split between GPU and CPU tracks
 		pDraw->AddLine(ImVec2(timelineRect.Min.x, cursor.y), ImVec2(timelineRect.Max.x, cursor.y), ImColor(style.BGTextColor), 4);
 
@@ -550,7 +526,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				*/
 				for (uint32 frameIndex = cpuRange.Begin; frameIndex < cpuRange.End; ++frameIndex)
 				{
-					DrawTrack(gCPUProfiler.GetEventData(frameIndex).GetEvents(track.Index), frameIndex, trackDepth, true);
+					DrawTrack(track.GetFrameData(frameIndex).GetEvents(), frameIndex, trackDepth, true);
 				}
 				cursor.y += trackDepth * style.BarHeight;
 			}
@@ -684,6 +660,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 		HUDContext::SelectedStatData& selectedEvent = context.SelectedEvent;
 		if ((uint32)selectedEvent.Hash != 0)
 		{
+			#if 0
 			const char* pName	  = "";
 			float		eventTime = 0;
 			uint32		n		  = 0;
@@ -753,6 +730,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 					ImGui::EndTable();
 				}
 			}
+#endif
 		}
 		ImGui::EndGroup();
 
