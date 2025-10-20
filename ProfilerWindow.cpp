@@ -13,7 +13,7 @@
 
 void HandleAssertMessage(const char* pMessage)
 {
-	printf(pMessage);
+	printf("%s", pMessage);
 	OutputDebugStringA(pMessage);
 }
 
@@ -64,9 +64,9 @@ public:
 struct StyleOptions
 {
 	int MaxDepth = 10;
-	int MaxTime	 = 80;
+	int MaxTime	 = 200;
 
-	float BarHeight		= 25;
+	float BarHeight		= 1.5f;
 	float BarPadding	= 2;
 	float ScrollBarSize = 15.0f;
 
@@ -76,6 +76,11 @@ struct StyleOptions
 	ImVec4 BarHighlightColor  = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
 
 	bool DebugMode = false;
+
+	float GetBarHeight() const
+	{
+		return BarHeight * ImGui::GetTextLineHeight();
+	}
 };
 
 struct HUDContext
@@ -96,18 +101,15 @@ struct HUDContext
 	struct SelectedStatData
 	{
 		StringHash Hash		  = {};
-		bool	   IsCPUEvent = false;
 		uint32	   NumSamples = 0;
 
 		float MovingAverageTime = 0;
 		float MinTime			= std::numeric_limits<float>::max();
 		float MaxTime			= 0.0f;
 
-		void Set(uint32 hash, bool isCPUEvent)
+		void Set(uint32 hash)
 		{
-			Hash	   = hash;
-			IsCPUEvent = isCPUEvent;
-
+			Hash			  = hash;
 			NumSamples		  = 0;
 			MovingAverageTime = 0;
 			MinTime			  = std::numeric_limits<float>::max();
@@ -137,7 +139,7 @@ static void EditStyle(StyleOptions& style)
 	ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.7f);
 	ImGui::SliderInt("Depth", &style.MaxDepth, 1, 12);
 	ImGui::SliderInt("Max Time", &style.MaxTime, 8, 500);
-	ImGui::SliderFloat("Bar Height", &style.BarHeight, 8, 33);
+	ImGui::SliderFloat("Bar Height", &style.BarHeight, 1, 4);
 	ImGui::SliderFloat("Bar Padding", &style.BarPadding, 0, 5);
 	ImGui::SliderFloat("Scroll Bar Size", &style.ScrollBarSize, 1.0f, 40.0f);
 	ImGui::ColorEdit4("Bar Color Multiplier", &style.BarColorMultiplier.x);
@@ -164,7 +166,7 @@ static std::string Sprintf(const char* pFormat, Args... args)
 {
 	static char buffer[1024];
 	int			size = sprintf_s(buffer, pFormat, std::forward<Args>(args)...);
-	return buffer;
+	return buffer; 
 }
 
 struct TraceContext
@@ -186,16 +188,10 @@ void BeginTrace(const char* pPath, TraceContext& context)
 	context.TraceStream.open(pPath);
 	context.TraceStream << "{\n\"traceEvents\": [\n";
 
-	context.TraceStream << Sprintf("{\"name\":\"process_name\",\"ph\":\"M\",\"pid\":0,\"args\":{\"name\":\"GPU\"}},\n");
-	context.TraceStream << Sprintf("{\"name\":\"process_name\",\"ph\":\"M\",\"pid\":1,\"args\":{\"name\":\"CPU\"}},\n");
-
-	for (const GPUProfiler::QueueInfo& queue : gGPUProfiler.GetQueues())
+	context.TraceStream << Sprintf("{\"name\":\"process_name\",\"ph\":\"M\",\"pid\":0,\"args\":{\"name\":\"Track\"}},\n");
+	for (const Profiler::EventTrack& track : gProfiler.GetTracks())
 	{
-		context.TraceStream << Sprintf("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":0,\"tid\":%d,\"args\":{\"name\":\"%s\"}},\n", queue.Index, queue.Name);
-	}
-	for (const CPUProfiler::EventTrack& track : gCPUProfiler.GetTracks())
-	{
-		context.TraceStream << Sprintf("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":%d,\"args\":{\"name\":\"%s\"}},\n", track.ID, track.Name);
+		context.TraceStream << Sprintf("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":0,\"tid\":%d,\"args\":{\"name\":\"%s\"}},\n", track.Index, track.Name);
 	}
 }
 
@@ -208,11 +204,11 @@ void UpdateTrace(TraceContext& context)
 	QueryPerformanceFrequency((LARGE_INTEGER*)&frequency);
 	const float TicksToMs = 1000.0f / frequency;
 
-	URange cpuRange = gCPUProfiler.GetFrameRange();
-	for (const CPUProfiler::EventTrack& track : gCPUProfiler.GetTracks())
+	URange cpuRange = gProfiler.GetFrameRange();
+	for (const Profiler::EventTrack& track : gProfiler.GetTracks())
 	{
-		for (const ProfilerEvent& event : track.GetFrameData(cpuRange.End - 1).GetEvents())
-			context.TraceStream << Sprintf("{\"pid\":1,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", track.ID, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
+		for (const ProfilerEvent& event : track.GetFrameData(cpuRange.Begin).GetEvents())
+			context.TraceStream << Sprintf("{\"pid\":0,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", track.Index, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
 	}
 }
 
@@ -263,13 +259,8 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 		// How many ticks are in the timeline
 		float ticksInTimeline = MsToTicks * style.MaxTime;
 
-		URange cpuRange	   = gCPUProfiler.GetFrameRange();
-		uint64 beginAnchor = 0;
-		if (cpuRange.GetLength() > 0)
-		{
-			const ProfilerEventData& eventData = gCPUProfiler.GetTracks().front().GetFrameData(cpuRange.Begin);
-			beginAnchor						   = eventData.GetEvents().size() > 0 ? eventData.GetEvents()[0].TicksBegin : 0;
-		}
+		URange cpuRange	   = gProfiler.GetFrameRange();
+		uint64 beginAnchor = gProfiler.GetFirstFrameAnchorTicks();
 
 		// How many pixels is one tick
 		const float TicksToPixels = timelineWidth / ticksInTimeline;
@@ -281,32 +272,32 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 			|	|	|	|
 			|	|	|	|
 		*/
-		pDraw->AddRectFilled(timelineRect.Min, ImVec2(timelineRect.Max.x, timelineRect.Min.y + style.BarHeight), ImColor(0.0f, 0.0f, 0.0f, 0.1f));
-		pDraw->AddRect(timelineRect.Min - ImVec2(10, 0), ImVec2(timelineRect.Max.x + 10, timelineRect.Min.y + style.BarHeight), ImColor(1.0f, 1.0f, 1.0f, 0.4f));
+		pDraw->AddRectFilled(timelineRect.Min, ImVec2(timelineRect.Max.x, timelineRect.Min.y + style.GetBarHeight()), ImColor(0.0f, 0.0f, 0.0f, 0.1f));
+		pDraw->AddRect(timelineRect.Min - ImVec2(10, 0), ImVec2(timelineRect.Max.x + 10, timelineRect.Min.y + style.GetBarHeight()), ImColor(1.0f, 1.0f, 1.0f, 0.4f));
 		for (int i = 0; i < style.MaxTime; ++i)
 		{
 			float  x0	   = (float)i * MsToTicks * TicksToPixels;
 			float  msWidth = 1.0f * MsToTicks * TicksToPixels;
 			ImVec2 tickPos = ImVec2(cursor.x + x0, timelineRect.Min.y);
-			pDraw->AddLine(tickPos + ImVec2(0, style.BarHeight * 0.5f), tickPos + ImVec2(0, style.BarHeight), ImColor(style.BGTextColor));
+			pDraw->AddLine(tickPos + ImVec2(0, style.GetBarHeight() * 0.5f), tickPos + ImVec2(0, style.GetBarHeight()), ImColor(style.BGTextColor));
 
 			if (i % 2 == 0)
 			{
-				pDraw->AddRectFilled(tickPos + ImVec2(0, style.BarHeight), tickPos + ImVec2(msWidth, timelineRect.Max.y), ImColor(1.0f, 1.0f, 1.0f, 0.02f));
+				pDraw->AddRectFilled(tickPos + ImVec2(0, style.GetBarHeight()), tickPos + ImVec2(msWidth, timelineRect.Max.y), ImColor(1.0f, 1.0f, 1.0f, 0.02f));
 				const char* pBarText;
 				ImFormatStringToTempBuffer(&pBarText, nullptr, "%d ms", i);
 				pDraw->AddText(tickPos + ImVec2(5, 0), ImColor(style.BGTextColor), pBarText);
 			}
 		}
 
-		cursor.y += style.BarHeight;
+		cursor.y += style.GetBarHeight();
 
 #if 0
 		// Add dark shade background for every even frame
 		int frameNr = 0;
 		for (uint32 i = cpuRange.Begin; i < cpuRange.End; ++i)
 		{
-			Span<const ProfilerEvent> events = gCPUProfiler.GetTracks()[0].Events[i].GetEvents();
+			Span<const ProfilerEvent> events = gProfiler.GetTracks()[0].Events[i].GetEvents();
 			if (events.size() > 0 && frameNr++ % 2 == 0)
 			{
 				float beginOffset = (events[0].TicksBegin - beginAnchor) * TicksToPixels;
@@ -316,7 +307,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 		}
 #endif
 
-		ImGui::PushClipRect(timelineRect.Min + ImVec2(0, style.BarHeight), timelineRect.Max, true);
+		ImGui::PushClipRect(timelineRect.Min + ImVec2(0, style.GetBarHeight()), timelineRect.Max, true);
 
 		ImRect clipRect = ImGui::GetCurrentWindow()->ClipRect;
 
@@ -325,7 +316,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 			[=== SomeFunction (1.2 ms) ===]
 		*/
 		bool anyHovered = false;
-		auto DrawTrack	= [&](Span<const ProfilerEvent> events, uint32 frameIndex, uint32& outTrackDepth, bool isCPUEvent) {
+		auto DrawTrack	= [&](Span<const ProfilerEvent> events, uint32 frameIndex, uint32& outTrackDepth) {
 			 for (const ProfilerEvent& event : events)
 			 {
 				 // Skip events above the max depth
@@ -340,8 +331,8 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				 {
 					 float	startPos = (event.TicksBegin < beginAnchor ? 0 : event.TicksBegin - beginAnchor) * TicksToPixels;
 					 float	endPos	 = (event.TicksEnd - beginAnchor) * TicksToPixels;
-					 float	y		 = event.Depth * style.BarHeight;
-					 ImRect itemRect = ImRect(cursor + ImVec2(startPos, y), cursor + ImVec2(endPos, y + style.BarHeight));
+					 float	y		 = event.Depth * style.GetBarHeight();
+					 ImRect itemRect = ImRect(cursor + ImVec2(startPos, y), cursor + ImVec2(endPos, y + style.GetBarHeight()));
 
 					 // Ensure a bar always has a width
 					 itemRect.Max.x = ImMax(itemRect.Max.x, itemRect.Min.x + 1);
@@ -360,7 +351,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 						 }
 						 else if (context.PauseThreshold && ms >= context.PauseThresholdTime)
 						 {
-							 gCPUProfiler.SetPaused(true);
+							 gProfiler.SetPaused(true);
 							 gGPUProfiler.SetPaused(true);
 						 }
 
@@ -422,7 +413,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 							 float		 etcWidth = 20.0f;
 							 if (textSize.x < itemRect.GetWidth() * 0.9f)
 							 {
-								 pDraw->AddText(itemRect.Min + (ImVec2(itemRect.GetWidth(), style.BarHeight) - textSize) * 0.5f, textColor, pBarText);
+								 pDraw->AddText(itemRect.Min + (ImVec2(itemRect.GetWidth(), style.GetBarHeight()) - textSize) * 0.5f, textColor, pBarText);
 							 }
 							 else if (itemRect.GetWidth() > etcWidth + 10)
 							 {
@@ -438,7 +429,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 
 								 float textWidth = ImGui::CalcTextSize(pBarText, pChar).x;
 
-								 ImVec2 textPos = itemRect.Min + ImVec2(4, (style.BarHeight - textSize.y) * 0.5f);
+								 ImVec2 textPos = itemRect.Min + ImVec2(4, (style.GetBarHeight() - textSize.y) * 0.5f);
 								 pDraw->AddText(textPos, textColor, pBarText, pChar);
 								 pDraw->AddText(textPos + ImVec2(textWidth, 0), textColor, pEtc);
 							 }
@@ -460,7 +451,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				 if (clicked)
 				 {
 					 StringHash eventHash = GetEventHash(event);
-					 context.SelectedEvent.Set(GetEventHash(event), isCPUEvent);
+					 context.SelectedEvent.Set(GetEventHash(event));
 				 }
 			 }
 		};
@@ -470,7 +461,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 			(>) Main Thread [1234]
 		*/
 		auto TrackHeader = [&](const char* pName, uint32 id) {
-			pDraw->AddRectFilled(ImVec2(timelineRect.Min.x, cursor.y), ImVec2(timelineRect.Max.x, cursor.y + style.BarHeight), ImColor(0.0f, 0.0f, 0.0f, 0.3f));
+			pDraw->AddRectFilled(ImVec2(timelineRect.Min.x, cursor.y), ImVec2(timelineRect.Max.x, cursor.y + style.GetBarHeight()), ImColor(0.0f, 0.0f, 0.0f, 0.3f));
 
 			bool   isOpen		   = ImGui::GetCurrentWindow()->StateStorage.GetBool(id, true);
 			ImVec2 trackTextCursor = ImVec2(timelineRect.Min.x, cursor.y);
@@ -490,25 +481,30 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 
 			trackTextCursor.x += caretSize;
 			pDraw->AddText(trackTextCursor, ImColor(style.BGTextColor), pName);
-			cursor.y += style.BarHeight;
+			cursor.y += style.GetBarHeight();
 			return isOpen;
 		};
 
-		// Split between GPU and CPU tracks
-		pDraw->AddLine(ImVec2(timelineRect.Min.x, cursor.y), ImVec2(timelineRect.Max.x, cursor.y), ImColor(style.BGTextColor), 4);
+		// Draw each track
+		Span<const Profiler::EventTrack> tracks = gProfiler.GetTracks();
 
-		// Draw each CPU thread track
-		Span<const CPUProfiler::EventTrack> tracks = gCPUProfiler.GetTracks();
-		for (uint32 trackIndex = 0; trackIndex < (uint32)tracks.size(); ++trackIndex)
+		// Sort by track type
+		Array<const Profiler::EventTrack*> sorted_tracks;
+		for (const Profiler::EventTrack& track : tracks)
+			sorted_tracks.push_back(&track);
+		std::sort(sorted_tracks.begin(), sorted_tracks.end(), [](const Profiler::EventTrack* a, const Profiler::EventTrack* b) {
+			return (int)a->Type > (int)b->Type;
+		});
+
+		for (const Profiler::EventTrack* pTrack : sorted_tracks)
 		{
-			PROFILE_CPU_SCOPE("CPU Track");
+			PROFILE_CPU_SCOPE("Timeline Track");
 
 			// Add thread name for track
-			const CPUProfiler::EventTrack& track = tracks[trackIndex];
 			const char*					   pHeaderText;
-			ImFormatStringToTempBuffer(&pHeaderText, nullptr, "%s [%d]", track.Name, track.ID);
+			ImFormatStringToTempBuffer(&pHeaderText, nullptr, "%s [%d]", pTrack->Name, pTrack->ID);
 
-			if (TrackHeader(pHeaderText, ImGui::GetID(&track)))
+			if (TrackHeader(pHeaderText, ImGui::GetID(pTrack)))
 			{
 				uint32 trackDepth = 0;
 
@@ -519,9 +515,9 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				*/
 				for (uint32 frameIndex = cpuRange.Begin; frameIndex < cpuRange.End; ++frameIndex)
 				{
-					DrawTrack(track.GetFrameData(frameIndex).GetEvents(), frameIndex, trackDepth, true);
+					DrawTrack(pTrack->GetFrameData(frameIndex).GetEvents(), frameIndex, trackDepth);
 				}
-				cursor.y += trackDepth * style.BarHeight;
+				cursor.y += trackDepth * style.GetBarHeight();
 			}
 
 			// Add vertical line to end track
@@ -653,15 +649,14 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 		HUDContext::SelectedStatData& selectedEvent = context.SelectedEvent;
 		if ((uint32)selectedEvent.Hash != 0)
 		{
-			#if 0
 			const char* pName	  = "";
 			float		eventTime = 0;
 			uint32		n		  = 0;
-			if (selectedEvent.IsCPUEvent)
+			for (uint32 i = cpuRange.Begin; i < cpuRange.End; ++i)
 			{
-				for (uint32 i = cpuRange.Begin; i < cpuRange.End; ++i)
+				for (const Profiler::EventTrack& track : gProfiler.GetTracks())
 				{
-					const ProfilerEventData& eventData = gCPUProfiler.GetEventData(i);
+					const ProfilerEventData& eventData = track.GetFrameData(i);
 					for (const ProfilerEvent& event : eventData.GetEvents())
 					{
 						if (GetEventHash(event) == selectedEvent.Hash)
@@ -675,26 +670,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 					}
 				}
 			}
-			else
-			{
-				Span<const GPUProfiler::QueueInfo> queues = gGPUProfiler.GetQueues();
-				for (uint32 i = gpuRange.Begin; i < gpuRange.End; ++i)
-				{
-					const ProfilerEventData& eventData = gGPUProfiler.GetEventData(i);
-					for (const ProfilerEvent& event : eventData.GetEvents())
-					{
-						if (GetEventHash(event) == context.SelectedEvent.Hash)
-						{
-							float time = TicksToMs * (float)(event.TicksEnd - event.TicksBegin);
-							selectedEvent.AddSample(time);
-							pName	  = event.pName;
-							eventTime = time;
-							++n;
-						}
-					}
-				}
-			}
-
+			
 			if (eventTime)
 			{
 				ImGui::Text(pName);
@@ -723,7 +699,6 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 					ImGui::EndTable();
 				}
 			}
-#endif
 		}
 		ImGui::EndGroup();
 
@@ -750,15 +725,15 @@ void DrawProfilerHUD()
 		ImFontConfig fontConfig;
 		fontConfig.MergeMode			   = true;
 		static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
-		context.IconFont				   = ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF(font_awesome_compressed_data, font_awesome_compressed_size, 15.0f, &fontConfig, icon_ranges);
+		context.IconFont				   = ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF(font_awesome_compressed_data, font_awesome_compressed_size, 0.0f, &fontConfig, icon_ranges);
 	}
 
-	if (gCPUProfiler.IsPaused())
+	if (gProfiler.IsPaused())
 		ImGui::Text("Paused");
 	else
 		ImGui::Text("Press Space to pause");
 
-	ImGui::SameLine(ImGui::GetWindowWidth() - 620);
+	ImGui::SameLine();
 
 	ImGui::Checkbox("Pause threshold", &Context().PauseThreshold);
 	ImGui::SameLine();
@@ -791,7 +766,7 @@ void DrawProfilerHUD()
 		context.IsPaused = !context.IsPaused;
 	}
 
-	gCPUProfiler.SetPaused(context.IsPaused);
+	gProfiler.SetPaused(context.IsPaused);
 	gGPUProfiler.SetPaused(context.IsPaused);
 
 	DrawProfilerTimeline(ImVec2(0, 0));

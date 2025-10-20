@@ -5,8 +5,9 @@
 
 #define NOMINMAX
 #include <d3d12.h>
+#include <dxgi.h>
 
-CPUProfiler gCPUProfiler;
+Profiler gProfiler;
 GPUProfiler gGPUProfiler;
 
 static uint32 ColorFromString(const char* pStr, float hueMin, float hueMax)
@@ -78,7 +79,7 @@ void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> qu
 			GetHeap(queueInfo.QueryHeapIndex).Initialize(pDevice, pQueue, QueryHeap::cMaxNumQueries, frameLatency);
 		}
 
-		queueInfo.TrackIndex = gCPUProfiler.RegisterTrack(queueInfo.Name, queueInfo.Index);
+		queueInfo.TrackIndex = gProfiler.RegisterTrack(queueInfo.Name, Profiler::EventTrack::EType::GPU, queueInfo.Index);
 	}
 
 
@@ -211,7 +212,7 @@ void GPUProfiler::Tick()
 			// Invalidate
 			queryRange = {};
 
-			gCPUProfiler.AddEvent(queue.TrackIndex, event, m_FrameToReadback);
+			gProfiler.AddEvent(queue.TrackIndex, event, m_FrameToReadback);
 		}
 
 		queryData.Events.NumEvents = 0;
@@ -313,7 +314,7 @@ GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bo
 	{
 		// If not, register new commandlist
 		// TODO: Pool CommandListStates in case ID3D12CommandLists are often recreated
-		pState				 = new CommandListState(this, pCmd);
+		pState = new CommandListState(this, pCmd);
 	
 		AcquireSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
 		m_CommandListMap[pCmd] = pState;
@@ -356,6 +357,8 @@ GPUProfiler::CommandListState::~CommandListState()
 
 void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pResolveQueue, uint32 maxNumQueries, uint32 frameLatency)
 {
+	gAssert(gProfiler.IsInitialized());
+
 	gAssert(maxNumQueries <= cMaxNumQueries, "Max number of queries (%d) should not exceed %d", maxNumQueries, cMaxNumQueries);
 
 	m_pResolveQueue = pResolveQueue;
@@ -481,18 +484,19 @@ bool GPUProfiler::QueryHeap::IsFrameComplete(uint64 frameIndex)
 // [SECTION] CPU Profiler
 //-----------------------------------------------------------------------------
 
-void CPUProfiler::Initialize(uint32 historySize)
+void Profiler::Initialize(uint32 historySize)
 {
 	m_HistorySize	= historySize;
 	m_IsInitialized = true;
+	m_BeginFrameTicks.resize(historySize);
 }
 
-void CPUProfiler::Shutdown()
+void Profiler::Shutdown()
 {
 }
 
 // Begin a new CPU event on the current thread
-void CPUProfiler::BeginEvent(const char* pName, uint32 color, const char* pFilePath, uint32 lineNumber)
+void Profiler::BeginEvent(const char* pName, uint32 color, const char* pFilePath, uint32 lineNumber)
 {
 	if (!m_IsInitialized)
 		return;
@@ -519,7 +523,7 @@ void CPUProfiler::BeginEvent(const char* pName, uint32 color, const char* pFileP
 }
 
 // End the last pushed event on the current thread
-void CPUProfiler::EndEvent()
+void Profiler::EndEvent()
 {
 	if (!m_IsInitialized)
 		return;
@@ -540,8 +544,94 @@ void CPUProfiler::EndEvent()
 }
 
 
+void Profiler::AddEvent(uint32 trackIndex, const ProfilerEvent& event, uint32 frameIndex)
+{
+	EventTrack& track = m_Tracks[trackIndex];
+	ProfilerEventData& data	 = track.GetFrameData(frameIndex);
+
+	// Name must be copied
+	ProfilerEvent	   newEvent = event;
+	newEvent.pName				= data.Allocator.String(newEvent.pName);
+
+	data.Events.push_back(newEvent);
+	data.NumEvents++;
+}
+
+
+void Profiler::Present(IDXGISwapChain* pSwapChain)
+{
+	if (m_PresentTrackIndex == -1)
+		m_PresentTrackIndex = RegisterTrack("Present", EventTrack::EType::Present, 0);
+
+	if (!m_Paused)
+	{
+		// Add an entry for the current present
+		uint32 presentID;
+		if (SUCCEEDED(pSwapChain->GetLastPresentCount(&presentID)))
+		{
+			PresentEntry& entry = m_PresentQueue[presentID % m_PresentQueue.size()];
+			QueryPerformanceCounter((LARGE_INTEGER*)&entry.PresentQPC);
+			entry.PresentID		= presentID;
+			entry.DisplayQPC	= 0;
+			entry.FrameIndex	= m_FrameIndex;
+
+			m_LastQueuedPresentID = presentID;
+		}
+	}
+
+	DXGI_FRAME_STATISTICS frameStats{};
+	while (SUCCEEDED(pSwapChain->GetFrameStatistics(&frameStats)) && frameStats.PresentCount > m_LastQueriedPresentID)
+	{
+		// Update the entry that was presented
+		{
+			uint32		  presentID	 = frameStats.PresentCount;
+			uint32		  entryIndex = presentID % m_PresentQueue.size();
+			PresentEntry& entry		 = m_PresentQueue[entryIndex];
+			if (entry.PresentID == presentID)
+			{
+				entry.DisplayQPC = frameStats.SyncQPCTime.QuadPart;
+			}
+		}
+
+		for (uint32 i = m_LastQueriedPresentID + 1; i <= frameStats.PresentCount; ++i)
+		{
+			uint32		  entryIndex = i % m_PresentQueue.size();
+			PresentEntry& entry		 = m_PresentQueue[entryIndex];
+			if (entry.PresentID != i)
+			{
+				// Queue overflow - Skip
+				continue;
+			}
+
+			entry.IsDropped = entry.DisplayQPC == 0;
+
+			OnPresentProcessed(entry);
+		}
+
+		m_LastQueriedPresentID = frameStats.PresentCount;
+	}
+}
+
+
+void Profiler::OnPresentProcessed(const PresentEntry& entry)
+{
+	if (m_LastProcessedPresentQPC != 0 && !entry.IsDropped)
+	{
+		ProfilerEvent event;
+		event.pName		 = "Present";
+		event.Color		 = ColorFromString(event.pName, 0.0f, 0.5f);
+		event.TicksBegin = m_LastProcessedPresentQPC;
+		event.TicksEnd	 = entry.DisplayQPC;
+
+		// Add a bar for current frame's present into the last frame so that the preset spans the time spent on screen
+		AddEvent(m_PresentTrackIndex, event, entry.FrameIndex - 1);
+	}
+	m_LastProcessedPresentQPC = entry.DisplayQPC;
+}
+
+
 // Process the last frame and advance
-void CPUProfiler::Tick()
+void Profiler::Tick()
 {
 	if (!m_IsInitialized)
 		return;
@@ -566,13 +656,15 @@ void CPUProfiler::Tick()
 		eventData.Allocator.Reset();
 	}
 
+	QueryPerformanceCounter((LARGE_INTEGER*)&m_BeginFrameTicks[m_FrameIndex % m_BeginFrameTicks.size()]);
+
 	// Begin a "CPU Frame" event
 	BeginEvent("CPU Frame");
 }
 
 
 // Register a new thread
-int CPUProfiler::RegisterCurrentThread(const char* pName)
+int Profiler::RegisterCurrentThread(const char* pName)
 {
 	int& threadIndex = GetCurrentThreadTrackIndex();
 
@@ -589,7 +681,7 @@ int CPUProfiler::RegisterCurrentThread(const char* pName)
 
 	if (threadIndex == -1)
 	{
-		threadIndex = RegisterTrack(pLocalName, GetCurrentThreadId());
+		threadIndex = RegisterTrack(pLocalName, EventTrack::EType::CPU, GetCurrentThreadId());
 	}
 	else
 	{
@@ -600,7 +692,7 @@ int CPUProfiler::RegisterCurrentThread(const char* pName)
 
 
 // Register a new track
-int CPUProfiler::RegisterTrack(const char* pName, uint32 id)
+int Profiler::RegisterTrack(const char* pName, EventTrack::EType type, uint32 id)
 {
 	std::scoped_lock lock(m_ThreadDataLock);
 
@@ -608,11 +700,13 @@ int CPUProfiler::RegisterTrack(const char* pName, uint32 id)
 	strcpy_s(data.Name, ARRAYSIZE(data.Name), pName);
 	data.ID	   = id;
 	data.Index = (uint32)m_Tracks.size() - 1;
+	data.Type  = type;
 
 	data.Events = new ProfilerEventData[m_HistorySize];
 	data.NumFrames = m_HistorySize;
 
 	return data.Index;
 }
+
 
 #endif

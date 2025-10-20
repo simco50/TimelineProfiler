@@ -4,7 +4,23 @@
 #define WITH_PROFILING 1
 #endif
 
-#if WITH_PROFILING
+#if !WITH_PROFILING
+
+#define PROFILE_REGISTER_THREAD(...)
+#define PROFILE_FRAME()
+#define PROFILE_EXECUTE_COMMANDLISTS(...)
+
+#define PROFILE_CPU_SCOPE(...)
+#define PROFILE_CPU_BEGIN(...)
+#define PROFILE_CPU_END()
+
+#define PROFILE_GPU_SCOPE(...)
+#define PROFILE_GPU_BEGIN(...)
+#define PROFILE_GPU_END()
+
+#define PROFILE_PRESENT(...)
+
+#else
 
 #include <algorithm>
 #include <array>
@@ -84,6 +100,7 @@ struct ID3D12Resource;
 struct ID3D12CommandAllocator;
 struct ID3D12QueryHeap;
 struct ID3D12Fence;
+struct IDXGISwapChain;
 using WinHandle = void*;
 
 
@@ -94,12 +111,12 @@ using WinHandle = void*;
 // Usage:
 //		PROFILE_REGISTER_THREAD(const char* pName)
 //		PROFILE_REGISTER_THREAD()
-#define PROFILE_REGISTER_THREAD(...) gCPUProfiler.RegisterCurrentThread(__VA_ARGS__)
+#define PROFILE_REGISTER_THREAD(...) gProfiler.RegisterCurrentThread(__VA_ARGS__)
 
 /// Usage:
 //		PROFILE_FRAME()
 #define PROFILE_FRAME()  \
-	gCPUProfiler.Tick(); \
+	gProfiler.Tick(); \
 	gGPUProfiler.Tick()
 
 /// Usage:
@@ -118,10 +135,14 @@ using WinHandle = void*;
 // Usage:
 //		PROFILE_CPU_BEGIN(const char* pName)
 //		PROFILE_CPU_BEGIN()
-#define PROFILE_CPU_BEGIN(...) gCPUProfiler.BeginEvent(__VA_ARGS__)
+#define PROFILE_CPU_BEGIN(...) gProfiler.BeginEvent(__VA_ARGS__)
 // Usage:
 //		PROFILE_CPU_END()
-#define PROFILE_CPU_END() gCPUProfiler.EndEvent()
+#define PROFILE_CPU_END() gProfiler.EndEvent()
+
+
+#define PROFILE_PRESENT(swapchain)		 gProfiler.Present(swapchain)
+
 
 /*
 	GPU Profiling
@@ -140,21 +161,6 @@ using WinHandle = void*;
 //		PROFILE_GPU_END(ID3D12GraphicsCommandList* pCommandList)
 #define PROFILE_GPU_END(cmdlist) gGPUProfiler.EndEvent(cmdlist)
 
-#else
-
-#define PROFILE_REGISTER_THREAD(...)
-#define PROFILE_FRAME()
-#define PROFILE_EXECUTE_COMMANDLISTS(...)
-
-#define PROFILE_CPU_SCOPE(...)
-#define PROFILE_CPU_BEGIN(...)
-#define PROFILE_CPU_END()
-
-#define PROFILE_GPU_SCOPE(...)
-#define PROFILE_GPU_BEGIN(...)
-#define PROFILE_GPU_END()
-
-#endif
 
 
 template <typename T, uint32 N>
@@ -271,7 +277,7 @@ public:
 	Span<const ProfilerEvent> GetEvents() const { return { Events.data(), NumEvents }; }
 
 private:
-	friend class CPUProfiler;
+	friend class Profiler;
 	friend class GPUProfiler;
 
 	struct OffsetAndSize
@@ -492,7 +498,7 @@ private:
 //-----------------------------------------------------------------------------
 
 // Global CPU Profiler
-extern class CPUProfiler gCPUProfiler;
+extern class Profiler gProfiler;
 
 struct CPUProfilerCallbacks
 {
@@ -507,10 +513,11 @@ struct CPUProfilerCallbacks
 // CPU Profiler
 // Also responsible for updating GPU profiler
 // Also responsible for drawing HUD
-class CPUProfiler
+class Profiler
 {
 public:
 	void Initialize(uint32 historySize);
+
 	void Shutdown();
 
 	// Start and push an event on the current thread
@@ -522,11 +529,11 @@ public:
 	// End and pop the last pushed event on the current thread
 	void EndEvent();
 
-	void AddEvent(uint32 trackIndex, const ProfilerEvent& event, uint32 frameIndex)
-	{
-		m_Tracks[trackIndex].GetFrameData(frameIndex).Events.push_back(event);
-		m_Tracks[trackIndex].GetFrameData(frameIndex).NumEvents++;
-	}
+	void AddEvent(uint32 trackIndex, const ProfilerEvent& event, uint32 frameIndex);
+
+	void Present(IDXGISwapChain* pSwapChain);
+
+	bool IsInitialized() const { return m_IsInitialized; }
 
 	// Resolve the last frame and advance to the next frame.
 	// Call at the START of the frame.
@@ -535,14 +542,19 @@ public:
 	// Initialize a thread with an optional name
 	int RegisterCurrentThread(const char* pName = nullptr);
 
-	// Register a new track
-	int RegisterTrack(const char* pName, uint32 id);
-
 	struct EventTrack
 	{
+		enum class EType
+		{
+			CPU,
+			GPU,
+			Present,
+		};
+
 		char								Name[128]{};			///< Name
 		uint32								ID				= 0;	///< ThreadID (or generic identifier)
 		uint32								Index			= 0;	///< Index in Tracks Array
+		EType								Type			= EType::CPU;
 		
 		static constexpr int				MAX_STACK_DEPTH = 32;
 		FixedArray<uint32, MAX_STACK_DEPTH> EventStack;
@@ -550,9 +562,12 @@ public:
 		ProfilerEventData& GetFrameData(int frameIndex) { return Events[frameIndex % NumFrames]; }
 		const ProfilerEventData& GetFrameData(int frameIndex) const { return Events[frameIndex % NumFrames]; }
 
-		ProfilerEventData*			Events = nullptr;
-		int				   NumFrames = 0;
+		ProfilerEventData*		Events = nullptr;
+		int						NumFrames = 0;
 	};
+	
+	// Register a new track
+	int RegisterTrack(const char* pName, EventTrack::EType type, uint32 id);
 
 	URange GetFrameRange() const
 	{
@@ -561,6 +576,8 @@ public:
 		return { .Begin = begin, .End = end };
 	}
 
+	uint64 GetFirstFrameAnchorTicks() const { return m_BeginFrameTicks[(m_FrameIndex + m_BeginFrameTicks.size() + 1) % m_BeginFrameTicks.size()]; }
+
 	Span<const EventTrack> GetTracks() const { return m_Tracks; }
 
 	void SetEventCallback(const CPUProfilerCallbacks& inCallbacks) { m_EventCallback = inCallbacks; }
@@ -568,6 +585,17 @@ public:
 	bool IsPaused() const { return m_Paused; }
 
 private:
+	struct PresentEntry
+	{
+		uint32 PresentID = 0;
+		uint64 PresentQPC = 0;
+		uint64 DisplayQPC = 0;
+		bool   IsDropped  = false;
+		uint32 FrameIndex = 0;
+    };
+
+	void OnPresentProcessed(const PresentEntry& entry);
+
 	int& GetCurrentThreadTrackIndex()
 	{
 		static thread_local int index = -1;
@@ -579,12 +607,19 @@ private:
 		int index = GetCurrentThreadTrackIndex();
 		if (index == -1)
 			index = RegisterCurrentThread();
-		return m_Tracks[GetCurrentThreadTrackIndex()];
+		return m_Tracks[index];
 	}
+
+	int							 m_PresentTrackIndex = -1;
+	std::array<PresentEntry, 32> m_PresentQueue;
+	uint32						 m_LastQueuedPresentID  = 0;
+	uint32						 m_LastQueriedPresentID = 0;
+	uint64						 m_LastProcessedPresentQPC = 0;
 
 	CPUProfilerCallbacks m_EventCallback;
 	std::mutex			 m_ThreadDataLock; ///< Mutex for accessing thread data
 	Array<EventTrack>	 m_Tracks;
+	Array<uint64>		 m_BeginFrameTicks;
 	uint32				 m_HistorySize	 = 0;		///< History size
 	uint32				 m_FrameIndex	 = 0;		///< The current frame index
 	bool				 m_Paused		 = false;	///< The current pause state
@@ -597,19 +632,21 @@ struct CPUProfileScope
 {
 	CPUProfileScope(const char* pFunctionName, const char* pFilePath, uint32 lineNumber, const char* pName, uint32 color = 0)
 	{
-		gCPUProfiler.BeginEvent(pName, color, pFilePath, lineNumber);
+		gProfiler.BeginEvent(pName, color, pFilePath, lineNumber);
 	}
 
 	CPUProfileScope(const char* pFunctionName, const char* pFilePath, uint32 lineNumber, uint32 color = 0)
 	{
-		gCPUProfiler.BeginEvent(pFunctionName, color, pFilePath, lineNumber);
+		gProfiler.BeginEvent(pFunctionName, color, pFilePath, lineNumber);
 	}
 
 	~CPUProfileScope()
 	{
-		gCPUProfiler.EndEvent();
+		gProfiler.EndEvent();
 	}
 
 	CPUProfileScope(const CPUProfileScope&)			   = delete;
 	CPUProfileScope& operator=(const CPUProfileScope&) = delete;
 };
+
+#endif

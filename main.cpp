@@ -187,7 +187,7 @@ int main(int, char**)
     init_info.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle)            { return g_pd3dSrvDescHeapAlloc.Free(cpu_handle, gpu_handle); };
     ImGui_ImplDX12_Init(&init_info);
 
-    gCPUProfiler.Initialize(5);
+    gProfiler.Initialize(5);
     Span<ID3D12CommandQueue*> queues(&g_pd3dCommandQueue, 1);
     gGPUProfiler.Initialize(g_pd3dDevice, queues, 2);
 
@@ -200,7 +200,7 @@ int main(int, char**)
 			.OnEventEnd = [](void* /*pUserData*/) { sSuperluminal.EndEvent(); },
 			.pUserData	  = nullptr
 		};
-		gCPUProfiler.SetEventCallback(callbacks);
+		gProfiler.SetEventCallback(callbacks);
     }
 #endif
 
@@ -379,6 +379,7 @@ int main(int, char**)
 
 			HRESULT hr = g_pSwapChain->Present(1, 0); // Present with vsync
 			// HRESULT hr = g_pSwapChain->Present(0, g_SwapChainTearingSupport ? DXGI_PRESENT_ALLOW_TEARING : 0); // Present without vsync
+			PROFILE_PRESENT(g_pSwapChain);
 			g_SwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
 			g_frameIndex++;
 		}
@@ -391,7 +392,7 @@ int main(int, char**)
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
 
-    gCPUProfiler.Shutdown();
+    gProfiler.Shutdown();
 	gGPUProfiler.Shutdown();
 
     CleanupDeviceD3D();
