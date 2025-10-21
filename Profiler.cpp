@@ -609,18 +609,25 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 
 void Profiler::OnPresentProcessed(const PresentEntry& entry)
 {
-	if (m_LastProcessedPresentQPC != 0 && !entry.IsDropped)
+	if (!entry.IsDropped)
 	{
-		ProfilerEvent event;
-		event.pName		 = "Present";
-		event.Color		 = ColorFromString(event.pName, 0.0f, 0.5f);
-		event.TicksBegin = m_LastProcessedPresentQPC;
-		event.TicksEnd	 = entry.DisplayQPC;
+		if (m_LastProcessedValidPresentQPC != 0)
+		{
+			ProfilerEvent event;
+			event.pName		 = "Present";
+			event.Color		 = ColorFromString(event.pName, 0.0f, 0.5f);
+			event.TicksBegin = m_LastProcessedValidPresentQPC;
+			event.TicksEnd	 = entry.DisplayQPC;
+			event.Depth		 = 0;
 
-		// Add a bar for current frame's present into the last frame so that the preset spans the time spent on screen
-		AddEvent(m_PresentTrackIndex, event, entry.FrameIndex - 1);
+			// The end of the present of the last frame is the start of the current
+			// So insert an event in the last non-dropped frame that spans this duration
+			AddEvent(m_PresentTrackIndex, event, m_LastProcessedValidFrame);
+		}
+
+		m_LastProcessedValidPresentQPC = entry.DisplayQPC;
+		m_LastProcessedValidFrame	   = entry.FrameIndex;
 	}
-	m_LastProcessedPresentQPC = entry.DisplayQPC;
 }
 
 

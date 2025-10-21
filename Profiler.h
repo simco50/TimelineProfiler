@@ -616,7 +616,8 @@ private:
 	std::array<PresentEntry, 32> m_PresentQueue;
 	uint32						 m_LastQueuedPresentID  = 0;
 	uint32						 m_LastQueriedPresentID = 0;
-	uint64						 m_LastProcessedPresentQPC = 0;
+	uint64						 m_LastProcessedValidPresentQPC = 0;
+	uint32						 m_LastProcessedValidFrame = 0;
 
 	CPUProfilerCallbacks m_EventCallback;
 	std::mutex			 m_ThreadDataLock; ///< Mutex for accessing thread data
