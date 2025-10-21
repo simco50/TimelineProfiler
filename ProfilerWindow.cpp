@@ -5,6 +5,7 @@
 
 #include "IconsFontAwesome4.h"
 #include "IconsFontAwesome4_data.h"
+#include "Roboto_data.h"
 #include <fstream>
 #include <imgui_internal.h>
 
@@ -63,8 +64,8 @@ public:
 
 struct StyleOptions
 {
-	int MaxDepth = 10;
-	int MaxTime	 = 200;
+	int	  MaxDepth = 10;
+	float MaxTime  = 200;
 
 	float BarHeight		= 1.5f;
 	float BarPadding	= 2;
@@ -86,6 +87,7 @@ struct StyleOptions
 struct HUDContext
 {
 	StyleOptions Style;
+	ImFont*		 TextFont = nullptr;
 	ImFont*		 IconFont = nullptr;
 
 	float  TimelineScale  = 5.0f;
@@ -104,7 +106,7 @@ struct HUDContext
 		uint32	   NumSamples = 0;
 
 		float MovingAverageTime = 0;
-		float MinTime			= std::numeric_limits<float>::max();
+		float MinTime			= FLT_MAX;
 		float MaxTime			= 0.0f;
 
 		void Set(uint32 hash)
@@ -112,15 +114,15 @@ struct HUDContext
 			Hash			  = hash;
 			NumSamples		  = 0;
 			MovingAverageTime = 0;
-			MinTime			  = std::numeric_limits<float>::max();
+			MinTime			  = FLT_MAX;
 			MaxTime			  = 0.0f;
 		}
 
 		void AddSample(float newSample)
 		{
 			++NumSamples;
-			MinTime			  = std::min(newSample, MinTime);
-			MaxTime			  = std::max(newSample, MaxTime);
+			MinTime			  = ImMin(newSample, MinTime);
+			MaxTime			  = ImMax(newSample, MaxTime);
 			MovingAverageTime = MovingAverageTime + (newSample - MovingAverageTime) / NumSamples;
 			NumSamples %= 4096;
 		}
@@ -138,7 +140,7 @@ static void EditStyle(StyleOptions& style)
 {
 	ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.7f);
 	ImGui::SliderInt("Depth", &style.MaxDepth, 1, 12);
-	ImGui::SliderInt("Max Time", &style.MaxTime, 8, 500);
+	ImGui::SliderFloat("Max Time", &style.MaxTime, 8, 500, "%.1f");
 	ImGui::SliderFloat("Bar Height", &style.BarHeight, 1, 4);
 	ImGui::SliderFloat("Bar Padding", &style.BarPadding, 0, 5);
 	ImGui::SliderFloat("Scroll Bar Size", &style.ScrollBarSize, 1.0f, 40.0f);
@@ -165,7 +167,7 @@ template <typename... Args>
 static std::string Sprintf(const char* pFormat, Args... args)
 {
 	static char buffer[1024];
-	int			size = sprintf_s(buffer, pFormat, std::forward<Args>(args)...);
+	sprintf_s(buffer, pFormat, std::forward<Args>(args)...);
 	return buffer; 
 }
 
@@ -207,7 +209,7 @@ void UpdateTrace(TraceContext& context)
 	URange cpuRange = gProfiler.GetFrameRange();
 	for (const Profiler::EventTrack& track : gProfiler.GetTracks())
 	{
-		for (const ProfilerEvent& event : track.GetFrameData(cpuRange.Begin).GetEvents())
+		for (const ProfilerEvent& event : track.GetFrameData(cpuRange.Begin).Events)
 			context.TraceStream << Sprintf("{\"pid\":0,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", track.Index, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
 	}
 }
@@ -274,38 +276,27 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 		*/
 		pDraw->AddRectFilled(timelineRect.Min, ImVec2(timelineRect.Max.x, timelineRect.Min.y + style.GetBarHeight()), ImColor(0.0f, 0.0f, 0.0f, 0.1f));
 		pDraw->AddRect(timelineRect.Min - ImVec2(10, 0), ImVec2(timelineRect.Max.x + 10, timelineRect.Min.y + style.GetBarHeight()), ImColor(1.0f, 1.0f, 1.0f, 0.4f));
-		for (int i = 0; i < style.MaxTime; ++i)
+
+		float minIntervalDistance = 80.0f;
+		float msWidth			  = 1.0f * MsToTicks * TicksToPixels;
+		float intervalSize		  = ceil(minIntervalDistance / msWidth * 2.0f) / 2.0f;
+
+		int markerIdx = 0;
+		for (float intervalTime = 0; intervalTime < style.MaxTime; intervalTime += intervalSize, ++markerIdx)
 		{
-			float  x0	   = (float)i * MsToTicks * TicksToPixels;
-			float  msWidth = 1.0f * MsToTicks * TicksToPixels;
+			float  x0	   = intervalTime * MsToTicks * TicksToPixels;
 			ImVec2 tickPos = ImVec2(cursor.x + x0, timelineRect.Min.y);
 			pDraw->AddLine(tickPos + ImVec2(0, style.GetBarHeight() * 0.5f), tickPos + ImVec2(0, style.GetBarHeight()), ImColor(style.BGTextColor));
 
-			if (i % 2 == 0)
-			{
-				pDraw->AddRectFilled(tickPos + ImVec2(0, style.GetBarHeight()), tickPos + ImVec2(msWidth, timelineRect.Max.y), ImColor(1.0f, 1.0f, 1.0f, 0.02f));
-				const char* pBarText;
-				ImFormatStringToTempBuffer(&pBarText, nullptr, "%d ms", i);
-				pDraw->AddText(tickPos + ImVec2(5, 0), ImColor(style.BGTextColor), pBarText);
-			}
+			const char* pBarText;
+			ImFormatStringToTempBuffer(&pBarText, nullptr, "%.1f ms", intervalTime);
+			pDraw->AddText(tickPos + ImVec2(5, 0), ImColor(style.BGTextColor), pBarText);
+
+			if (markerIdx % 2 == 0)
+				pDraw->AddRectFilled(tickPos + ImVec2(0, style.GetBarHeight()), tickPos + ImVec2(intervalSize * MsToTicks * TicksToPixels, timelineRect.Max.y), ImColor(1.0f, 1.0f, 1.0f, 0.02f));
 		}
 
 		cursor.y += style.GetBarHeight();
-
-#if 0
-		// Add dark shade background for every even frame
-		int frameNr = 0;
-		for (uint32 i = cpuRange.Begin; i < cpuRange.End; ++i)
-		{
-			Span<const ProfilerEvent> events = gProfiler.GetTracks()[0].Events[i].GetEvents();
-			if (events.size() > 0 && frameNr++ % 2 == 0)
-			{
-				float beginOffset = (events[0].TicksBegin - beginAnchor) * TicksToPixels;
-				float endOffset	  = (events[0].TicksEnd - beginAnchor) * TicksToPixels;
-				pDraw->AddRectFilled(ImVec2(cursor.x + beginOffset, timelineRect.Min.y), ImVec2(cursor.x + endOffset, timelineRect.Max.y), ImColor(1.0f, 1.0f, 1.0f, 0.05f));
-			}
-		}
-#endif
 
 		ImGui::PushClipRect(timelineRect.Min + ImVec2(0, style.GetBarHeight()), timelineRect.Max, true);
 
@@ -407,32 +398,17 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 						 {
 							 const char* pBarText;
 							 ImFormatStringToTempBuffer(&pBarText, nullptr, "%s (%.2f ms)", event.pName, ms);
+							 ImVec2 textSize = ImGui::CalcTextSize(pBarText);
 
-							 ImVec2		 textSize = ImGui::CalcTextSize(pBarText);
-							 const char* pEtc	  = "...";
-							 float		 etcWidth = 20.0f;
-							 if (textSize.x < itemRect.GetWidth() * 0.9f)
-							 {
-								 pDraw->AddText(itemRect.Min + (ImVec2(itemRect.GetWidth(), style.GetBarHeight()) - textSize) * 0.5f, textColor, pBarText);
-							 }
-							 else if (itemRect.GetWidth() > etcWidth + 10)
-							 {
-								 const char* pChar		   = pBarText;
-								 float		 currentOffset = 10;
-								 while (*pChar++)
-								 {
-									 float width = ImGui::CalcTextSize(pChar, pChar + 1).x;
-									 if (currentOffset + width + etcWidth > itemRect.GetWidth())
-										 break;
-									 currentOffset += width;
-								 }
+							 itemRect.Expand(ImVec2(-2.0f, 0.0f));
 
-								 float textWidth = ImGui::CalcTextSize(pBarText, pChar).x;
+							 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.f, 0.f, 0.f, 0.5f));
+							 itemRect.Translate(ImVec2(2.0f, 2.0f));
+							 ImGui::RenderTextEllipsis(pDraw, itemRect.Min + ImMax(ImVec2(), ImVec2(itemRect.GetWidth(), style.GetBarHeight()) - textSize) * 0.5f, itemRect.Max, itemRect.Max.x, pBarText, nullptr, &textSize);
+							 ImGui::PopStyleColor();
 
-								 ImVec2 textPos = itemRect.Min + ImVec2(4, (style.GetBarHeight() - textSize.y) * 0.5f);
-								 pDraw->AddText(textPos, textColor, pBarText, pChar);
-								 pDraw->AddText(textPos + ImVec2(textWidth, 0), textColor, pEtc);
-							 }
+							 itemRect.Translate(ImVec2(-2.0f, -2.0f));
+							 ImGui::RenderTextEllipsis(pDraw, itemRect.Min + ImMax(ImVec2(), ImVec2(itemRect.GetWidth(), style.GetBarHeight()) - textSize) * 0.5f, itemRect.Max, itemRect.Max.x, pBarText, nullptr, &textSize);
 						 }
 					 }
 				 }
@@ -443,7 +419,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 					 {
 						 ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f), "%s | %.3f ms", event.pName, TicksToMs * (float)(event.TicksEnd - event.TicksBegin));
 						 ImGui::Text("Frame %d", frameIndex);
-						 if (event.pFilePath)
+						 if (event.pFilePath && *event.pFilePath != 0)
 							 ImGui::Text("%s:%d", event.pFilePath, event.LineNumber);
 						 ImGui::EndTooltip();
 					 }
@@ -501,7 +477,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 			PROFILE_CPU_SCOPE("Timeline Track");
 
 			// Add thread name for track
-			const char*					   pHeaderText;
+			const char* pHeaderText;
 			ImFormatStringToTempBuffer(&pHeaderText, nullptr, "%s [%d]", pTrack->Name, pTrack->ID);
 
 			if (TrackHeader(pHeaderText, ImGui::GetID(pTrack)))
@@ -515,7 +491,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				*/
 				for (uint32 frameIndex = cpuRange.Begin; frameIndex < cpuRange.End; ++frameIndex)
 				{
-					DrawTrack(pTrack->GetFrameData(frameIndex).GetEvents(), frameIndex, trackDepth);
+					DrawTrack(pTrack->GetFrameData(frameIndex).Events, frameIndex, trackDepth);
 				}
 				cursor.y += trackDepth * style.GetBarHeight();
 			}
@@ -630,12 +606,12 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 
 		ImGui::BeginGroup();
 
-		std::string tracePath = "trace.json";
+		const char* pTracePath = "trace.json";
 		if (!traceContext.TraceStream.is_open())
 		{
 			if (ImGui::Button("Begin Trace", ImVec2(ImGui::GetContentRegionAvail().x, 0)))
 			{
-				BeginTrace(tracePath.c_str(), traceContext);
+				BeginTrace(pTracePath, traceContext);
 			}
 		}
 		else
@@ -657,7 +633,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				for (const Profiler::EventTrack& track : gProfiler.GetTracks())
 				{
 					const ProfilerEventData& eventData = track.GetFrameData(i);
-					for (const ProfilerEvent& event : eventData.GetEvents())
+					for (const ProfilerEvent& event : eventData.Events)
 					{
 						if (GetEventHash(event) == selectedEvent.Hash)
 						{
@@ -722,11 +698,24 @@ void DrawProfilerHUD()
 
 	if (!context.IconFont)
 	{
-		ImFontConfig fontConfig;
-		fontConfig.MergeMode			   = true;
-		static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
-		context.IconFont				   = ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF(font_awesome_compressed_data, font_awesome_compressed_size, 0.0f, &fontConfig, icon_ranges);
+		{
+			ImFontConfig fontConfig;
+			fontConfig.MergeMode = false;
+			strcpy_s(fontConfig.Name, "Roboto-Regular");
+			context.TextFont = ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF(roboto_regular_compressed_data, roboto_regular_compressed_size, 0.0f, &fontConfig);
+		}
+
+		{
+			ImFontConfig fontConfig;
+			fontConfig.MergeMode = true;
+			strcpy_s(fontConfig.Name, "FontAwesome");
+			static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
+			context.IconFont				   = ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF(font_awesome_compressed_data, font_awesome_compressed_size, 0.0f, &fontConfig, icon_ranges);
+		}
 	}
+
+	ImGui::PushFont(context.TextFont);
+	ImGui::PushStyleColor(ImGuiCol_Text, style.FGTextColor);
 
 	if (gProfiler.IsPaused())
 		ImGui::Text("Paused");
@@ -770,6 +759,9 @@ void DrawProfilerHUD()
 	gGPUProfiler.SetPaused(context.IsPaused);
 
 	DrawProfilerTimeline(ImVec2(0, 0));
+
+	ImGui::PopStyleColor();
+	ImGui::PopFont();
 }
 
 #endif

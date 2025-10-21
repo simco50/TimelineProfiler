@@ -31,6 +31,8 @@
 #include <unordered_map>
 #include <vector>
 
+void DrawProfilerHUD();
+
 void HandleAssertMessage(const char* pMessage);
 
 template<typename... Args>
@@ -194,6 +196,8 @@ private:
 	StaticArray<T, N> Data{};
 };
 
+
+
 // Simple Linear Allocator
 class LinearAllocator
 {
@@ -210,6 +214,14 @@ public:
 
 	LinearAllocator(LinearAllocator&)			 = delete;
 	LinearAllocator& operator=(LinearAllocator&) = delete;
+	LinearAllocator(LinearAllocator&& rhs)
+	{
+		std::swap(m_pData, rhs.m_pData);
+		std::swap(m_Size, rhs.m_Size);
+		uint32 offset = rhs.m_Offset;
+		rhs.m_Offset.store(m_Offset);
+		m_Offset = offset;
+	}
 
 	void Reset()
 	{
@@ -245,7 +257,7 @@ private:
 	std::atomic<uint32> m_Offset;
 };
 
-void DrawProfilerHUD();
+
 
 // Single event
 struct ProfilerEvent
@@ -265,6 +277,8 @@ struct ProfilerEvent
 };
 static_assert(std::has_unique_object_representations_v<ProfilerEvent>);
 
+
+
 // Data for a single frame of profiling events
 class ProfilerEventData
 {
@@ -274,22 +288,10 @@ public:
 	{
 	}
 
-	Span<const ProfilerEvent> GetEvents() const { return { Events.data(), NumEvents }; }
-
-private:
-	friend class Profiler;
-	friend class GPUProfiler;
-
-	struct OffsetAndSize
-	{
-		uint32 Offset;
-		uint32 Size;
-	};
-
 	LinearAllocator		 Allocator;					  ///< Scratch allocator for frame
 	Array<ProfilerEvent> Events;					  ///< Event storage for frame
-	uint32				 NumEvents = 0;				  ///< Total number of recorded events
 };
+
 
 
 //-----------------------------------------------------------------------------
@@ -336,14 +338,14 @@ public:
 	// Data of a single GPU queue. Allows converting GPU timestamps to CPU timestamps
 	struct QueueInfo
 	{
-		char				Name[128]{};				   ///< Name of the queue
-		ID3D12CommandQueue* pQueue				= nullptr; ///< The D3D queue object
-		uint64				GPUCalibrationTicks = 0;	   ///< The number of GPU ticks when the calibration was done
-		uint64				CPUCalibrationTicks = 0;	   ///< The number of CPU ticks when the calibration was done
-		uint64				GPUFrequency		= 0;	   ///< The GPU tick frequency
-		uint32				Index				= 0;	   ///< Index of queue
-		uint32				QueryHeapIndex		= 0;	   ///< Query Heap index (Copy vs. Other queues)
-		uint32				TrackIndex			= 0;
+		char				Name[128]{};					///< Name of the queue
+		ID3D12CommandQueue* pQueue				= nullptr;	///< The D3D queue object
+		uint64				GPUCalibrationTicks = 0;		///< The number of GPU ticks when the calibration was done
+		uint64				CPUCalibrationTicks = 0;		///< The number of CPU ticks when the calibration was done
+		uint64				GPUFrequency		= 0;		///< The GPU tick frequency
+		uint32				Index				= 0;		///< Index of queue
+		uint32				QueryHeapIndex		= 0;		///< Query Heap index (Copy vs. Other queues)
+		uint32				TrackIndex			= 0;		///< The index in the tracks of the profiler
 	};
 
 	Span<const QueueInfo> GetQueues() const { return m_Queues; }
@@ -406,7 +408,7 @@ private:
 		Array<QueryPair> Pairs;
 		ProfilerEventData Events;
 	};
-	QueryData& GetQueryData(uint32 frameIndex) { return m_pQueryData[frameIndex % m_FrameLatency]; }
+	QueryData& GetQueryData(uint32 frameIndex) { return m_QueryData[frameIndex % m_FrameLatency]; }
 	QueryData& GetQueryData() { return GetQueryData(m_FrameIndex); }
 
 	// Contains the state for a tracked commandlist
@@ -446,8 +448,8 @@ private:
 	bool m_IsPaused		 = false;
 	bool m_PauseQueued	 = false;
 
+	Array<QueryData>		  m_QueryData;					///< Data containing all intermediate query event data. 1 per frame latency
 	std::atomic<uint32>		  m_EventIndex		 = 0;		///< Current event index
-	QueryData*				  m_pQueryData		 = nullptr; ///< Data containing all intermediate query event data. 1 per frame latency
 	uint32					  m_FrameLatency	 = 0;		///< Max number of in-flight GPU frames
 	uint32					  m_FrameToReadback	 = 0;		///< Next frame to readback from
 	uint32					  m_FrameIndex		 = 0;		///< Current frame index
@@ -455,15 +457,15 @@ private:
 	uint64					  m_CPUTickFrequency = 0;		///< Tick frequency of CPU for QPC
 	std::mutex				  m_QueryRangeLock;
 
-	WinHandle							m_CommandListMapLock{}; ///< Lock for accessing commandlist state hashmap
-	HashMap<ID3D12CommandList*, CommandListState*> m_CommandListMap;		///< Maps commandlist to index
+	WinHandle									   m_CommandListMapLock{}; ///< Lock for accessing commandlist state hashmap
+	HashMap<ID3D12CommandList*, CommandListState*> m_CommandListMap;	   ///< Maps commandlist to index
 
 	static constexpr uint32 MAX_EVENT_DEPTH = 32;
 	using ActiveEventStack					= FixedArray<CommandListState::Query, MAX_EVENT_DEPTH>;
-	Array<ActiveEventStack>				 m_QueueEventStack; ///< Stack of active events for each command queue
-	Array<QueueInfo>					 m_Queues;			///< All registered queues
-	HashMap<const ID3D12CommandQueue*, uint32> m_QueueIndexMap;	///< Map from command queue to index
-	GPUProfilerCallbacks				 m_EventCallback;
+	Array<ActiveEventStack>					   m_QueueEventStack; ///< Stack of active events for each command queue
+	Array<QueueInfo>						   m_Queues;		  ///< All registered queues
+	HashMap<const ID3D12CommandQueue*, uint32> m_QueueIndexMap;	  ///< Map from command queue to index
+	GPUProfilerCallbacks					   m_EventCallback;
 };
 
 // Helper RAII-style structure to push and pop a GPU sample event
@@ -492,6 +494,8 @@ struct GPUProfileScope
 private:
 	ID3D12GraphicsCommandList* pCmd;
 };
+
+
 
 //-----------------------------------------------------------------------------
 // [SECTION] CPU Profiler
@@ -551,6 +555,9 @@ public:
 			Present,
 		};
 
+		ProfilerEventData& GetFrameData(int frameIndex) { return Events[frameIndex % Events.size()]; }
+		const ProfilerEventData& GetFrameData(int frameIndex) const { return Events[frameIndex % Events.size()]; }
+
 		char								Name[128]{};			///< Name
 		uint32								ID				= 0;	///< ThreadID (or generic identifier)
 		uint32								Index			= 0;	///< Index in Tracks Array
@@ -558,12 +565,7 @@ public:
 		
 		static constexpr int				MAX_STACK_DEPTH = 32;
 		FixedArray<uint32, MAX_STACK_DEPTH> EventStack;
-
-		ProfilerEventData& GetFrameData(int frameIndex) { return Events[frameIndex % NumFrames]; }
-		const ProfilerEventData& GetFrameData(int frameIndex) const { return Events[frameIndex % NumFrames]; }
-
-		ProfilerEventData*		Events = nullptr;
-		int						NumFrames = 0;
+		Array<ProfilerEventData>			Events;
 	};
 	
 	// Register a new track

@@ -89,11 +89,11 @@ void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> qu
 		queryCapacity += heap.GetQueryCapacity();
 
 
-	m_pQueryData = new QueryData[frameLatency];
+	m_QueryData.resize(frameLatency);
 	for (uint32 i = 0; i < frameLatency; ++i)
 	{
-		m_pQueryData[i].Pairs.resize(queryCapacity / 2);
-		m_pQueryData[i].Events.Events.resize(queryCapacity / 2);
+		m_QueryData[i].Pairs.resize(queryCapacity / 2);
+		m_QueryData[i].Events.Events.resize(queryCapacity / 2);
 	}
 
 	m_IsInitialized = true;
@@ -101,8 +101,6 @@ void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> qu
 
 void GPUProfiler::Shutdown()
 {
-	delete[] m_pQueryData;
-
 	for (QueryHeap& heap : m_QueryHeaps)
 		heap.Shutdown();
 
@@ -172,11 +170,6 @@ void GPUProfiler::Tick()
 	for (ActiveEventStack& stack : m_QueueEventStack)
 		gAssert(stack.GetSize() == 0, "EventStack for the CommandQueue should be empty. Forgot to `End()` %d Events", stack.GetSize());
 
-	QueryData&		   queryData	  = GetQueryData(m_FrameIndex);
-	ProfilerEventData& currEventFrame = queryData.Events;
-	currEventFrame.NumEvents		  = std::min((uint32)currEventFrame.Events.size(), (uint32)m_EventIndex);
-	m_EventIndex					  = 0;
-
 	// Poll query heap and populate event timings
 	while (m_FrameToReadback < m_FrameIndex)
 	{
@@ -189,9 +182,9 @@ void GPUProfiler::Tick()
 
 		std::scoped_lock lock(m_QueryRangeLock);
 
-		QueryData&		   queryData = GetQueryData(m_FrameToReadback);
+		QueryData& queryData = GetQueryData(m_FrameToReadback);
 
-		for (uint32 i = 0; i < queryData.Events.NumEvents; ++i)
+		for (uint32 i = 0; i < queryData.Pairs.size(); ++i)
 		{
 			ProfilerEvent&		  event		 = queryData.Events.Events[i];
 			QueryData::QueryPair& queryRange = queryData.Pairs[i];
@@ -215,8 +208,6 @@ void GPUProfiler::Tick()
 			gProfiler.AddEvent(queue.TrackIndex, event, m_FrameToReadback);
 		}
 
-		queryData.Events.NumEvents = 0;
-
 		++m_FrameToReadback;
 	}
 
@@ -238,7 +229,6 @@ void GPUProfiler::Tick()
 
 		QueryData& queryData = GetQueryData();
 		queryData.Events.Allocator.Reset();
-		queryData.Events.NumEvents = 0;
 	}
 }
 
@@ -508,14 +498,14 @@ void Profiler::BeginEvent(const char* pName, uint32 color, const char* pFilePath
 		return;
 
 	// Record new event
-	EventTrack& track		= GetCurrentThreadTrack();
-	track.EventStack.Push() = (uint32)track.GetFrameData(m_FrameIndex).Events.size();
+	EventTrack&		   track	 = GetCurrentThreadTrack();
+	ProfilerEventData& eventData = track.GetFrameData(m_FrameIndex);
+	track.EventStack.Push() = (uint32)eventData.Events.size();
 
-	track.GetFrameData(m_FrameIndex).NumEvents++;
-	ProfilerEvent& newEvent = track.GetFrameData(m_FrameIndex).Events.emplace_back();
+	ProfilerEvent& newEvent = eventData.Events.emplace_back();
 	newEvent.Depth			= track.EventStack.GetSize();
 	newEvent.ThreadIndex	= track.Index;
-	newEvent.pName			= track.GetFrameData(m_FrameIndex).Allocator.String(pName);
+	newEvent.pName			= eventData.Allocator.String(pName);
 	newEvent.pFilePath		= pFilePath;
 	newEvent.LineNumber		= lineNumber;
 	newEvent.Color			= color == 0 ? ColorFromString(pName, 0.5f, 1.0f) : color;
@@ -554,7 +544,6 @@ void Profiler::AddEvent(uint32 trackIndex, const ProfilerEvent& event, uint32 fr
 	newEvent.pName				= data.Allocator.String(newEvent.pName);
 
 	data.Events.push_back(newEvent);
-	data.NumEvents++;
 }
 
 
@@ -569,6 +558,11 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 		uint32 presentID;
 		if (SUCCEEDED(pSwapChain->GetLastPresentCount(&presentID)))
 		{
+			// If the last queried present is larger than the current present,
+			// that means the swapchain may have been recreated and we need to reset.
+			if (m_LastQueuedPresentID > presentID)
+				m_LastQueriedPresentID = 0;
+
 			PresentEntry& entry = m_PresentQueue[presentID % m_PresentQueue.size()];
 			QueryPerformanceCounter((LARGE_INTEGER*)&entry.PresentQPC);
 			entry.PresentID		= presentID;
@@ -652,7 +646,6 @@ void Profiler::Tick()
 	{
 		ProfilerEventData& eventData = m_Tracks[threadIndex].GetFrameData(m_FrameIndex);
 		eventData.Events.clear();
-		eventData.NumEvents = 0;
 		eventData.Allocator.Reset();
 	}
 
@@ -701,9 +694,7 @@ int Profiler::RegisterTrack(const char* pName, EventTrack::EType type, uint32 id
 	data.ID	   = id;
 	data.Index = (uint32)m_Tracks.size() - 1;
 	data.Type  = type;
-
-	data.Events = new ProfilerEventData[m_HistorySize];
-	data.NumFrames = m_HistorySize;
+	data.Events.resize(m_HistorySize);
 
 	return data.Index;
 }
