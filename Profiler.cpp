@@ -27,7 +27,7 @@ static uint32 HSV2RGB(float hue, float saturation, float value)
 		   255 << 24;
 }
 
-static uint32 ColorFromString(const char* pStr, float hueMin, float hueMax)
+static uint32 ColorFromString(const char* pStr)
 {
 	const float saturation = 0.5f;
 	const float value	   = 0.6f;
@@ -152,7 +152,7 @@ void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName,
 	event.pName			 = queryData.Events.Allocator.String(pName);
 	event.pFilePath		 = pFilePath;
 	event.LineNumber	 = lineNumber;
-	event.Color			 = color == 0 ? ColorFromString(pName, 0.0f, 0.5f) : color;
+	event.Color			 = color == 0 ? ColorFromString(pName) : color;
 }
 
 void GPUProfiler::EndEvent(ID3D12GraphicsCommandList* pCmd)
@@ -521,7 +521,7 @@ void Profiler::BeginEvent(const char* pName, uint32 color, const char* pFilePath
 	newEvent.pName			= eventData.Allocator.String(pName);
 	newEvent.pFilePath		= pFilePath;
 	newEvent.LineNumber		= lineNumber;
-	newEvent.Color			= color == 0 ? ColorFromString(pName, 0.5f, 1.0f) : color;
+	newEvent.Color			= color == 0 ? ColorFromString(pName) : color;
 	QueryPerformanceCounter((LARGE_INTEGER*)(&newEvent.TicksBegin));
 }
 
@@ -573,10 +573,11 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 		{
 			// If the last queried present is larger than the current present,
 			// that means the swapchain may have been recreated and we need to reset.
-			if (m_LastQueuedPresentID > presentID)
+			if (m_LastQueuedPresentID > presentID || m_pPresentSwapChain != pSwapChain)
 			{
 				m_LastQueriedPresentID = 0;
 				m_PresentQueue		   = {};
+				m_pPresentSwapChain	   = pSwapChain;
 			}
 
 			PresentEntry* pEntry = GetPresentEntry(presentID, true);

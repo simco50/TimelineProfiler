@@ -640,6 +640,7 @@ private:
 		return &entry;
 	}
 
+	IDXGISwapChain*				  m_pPresentSwapChain			= nullptr;
 	int							  m_PresentTrackIndex			= -1;
 	StaticArray<PresentEntry, 32> m_PresentQueue				= {};
 	uint32						  m_LastQueuedPresentID			= 0;
