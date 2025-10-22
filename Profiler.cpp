@@ -574,7 +574,10 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 			// If the last queried present is larger than the current present,
 			// that means the swapchain may have been recreated and we need to reset.
 			if (m_LastQueuedPresentID > presentID)
+			{
 				m_LastQueriedPresentID = 0;
+				m_PresentQueue		   = {};
+			}
 
 			PresentEntry* pEntry = GetPresentEntry(presentID, true);
 			QueryPerformanceCounter((LARGE_INTEGER*)&pEntry->PresentQPC);
@@ -628,6 +631,7 @@ void Profiler::OnPresentProcessed(const PresentEntry& entry)
 			// The end of the present of the last frame is the start of the current
 			// So insert an event in the last non-dropped frame that spans this duration
 			{
+				gAssert(m_LastProcessedValidPresentID != entry.PresentID);
 				ProfilerEvent event{
 					.pName		= "Present",
 					.Color		= HSV2RGB(0.5f, 0.5f, 0.5f),
@@ -635,7 +639,6 @@ void Profiler::OnPresentProcessed(const PresentEntry& entry)
 					.TicksBegin = pLastValidPresent->DisplayQPC,
 					.TicksEnd	= entry.DisplayQPC,
 				};
-
 				
 				AddEvent(m_PresentTrackIndex, event, pLastValidPresent->FrameIndex);
 			}

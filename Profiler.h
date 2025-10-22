@@ -609,7 +609,7 @@ public:
 private:
 	struct PresentEntry
 	{
-		uint32 PresentID = 0;
+		uint32 PresentID = ~0u;
 		uint64 PresentQPC = 0;
 		uint64 DisplayQPC = 0;
 		bool   IsDropped  = false;

@@ -90,31 +90,37 @@ struct ExampleDescriptorHeapAllocator
 };
 
 // Data
-static FrameContext                 g_frameContext[APP_NUM_FRAMES_IN_FLIGHT] = {};
-static UINT                         g_frameIndex = 0;
+static FrameContext g_frameContext[APP_NUM_FRAMES_IN_FLIGHT] = {};
+static UINT			g_frameIndex							 = 0;
 
-static ID3D12Device*                g_pd3dDevice = nullptr;
-static ID3D12DescriptorHeap*        g_pd3dRtvDescHeap = nullptr;
-static ID3D12DescriptorHeap*        g_pd3dSrvDescHeap = nullptr;
-static ExampleDescriptorHeapAllocator g_pd3dSrvDescHeapAlloc;
-static ID3D12CommandQueue*          g_pd3dCommandQueue = nullptr;
-static ID3D12GraphicsCommandList*   g_pd3dCommandList = nullptr;
-static ID3D12Fence*                 g_fence = nullptr;
-static HANDLE                       g_fenceEvent = nullptr;
-static UINT64                       g_fenceLastSignaledValue = 0;
-static IDXGISwapChain3*             g_pSwapChain = nullptr;
-static bool                         g_SwapChainTearingSupport = false;
-static bool                         g_SwapChainOccluded = false;
-static HANDLE                       g_hSwapChainWaitableObject = nullptr;
-static ID3D12Resource*              g_mainRenderTargetResource[APP_NUM_BACK_BUFFERS] = {};
-static D3D12_CPU_DESCRIPTOR_HANDLE  g_mainRenderTargetDescriptor[APP_NUM_BACK_BUFFERS] = {};
+static ID3D12Device*				  g_pd3dDevice										 = nullptr;
+static ID3D12DescriptorHeap*		  g_pd3dRtvDescHeap									 = nullptr;
+static ID3D12DescriptorHeap*		  g_pd3dSrvDescHeap									 = nullptr;
+static ExampleDescriptorHeapAllocator g_pd3dSrvDescHeapAlloc							 = {};
+static ID3D12CommandQueue*			  g_pd3dCommandQueue								 = nullptr;
+static ID3D12GraphicsCommandList*	  g_pd3dCommandList									 = nullptr;
+static ID3D12Fence*					  g_fence											 = nullptr;
+static HANDLE						  g_fenceEvent										 = nullptr;
+static UINT64						  g_fenceLastSignaledValue							 = 0;
+static IDXGISwapChain3*				  g_pSwapChain										 = nullptr;
+static bool							  g_SwapChainTearingSupport							 = false;
+static bool							  g_SwapChainOccluded								 = false;
+static HANDLE						  g_hSwapChainWaitableObject						 = nullptr;
+static bool							  g_SwapChainEnableTearing							 = true;
+static bool							  g_SwapChainEnableVSync							 = true;
+static bool							  g_SwapChainEnableWaitableObject					 = true;
+static int							  g_SwapChainMaximumFrameLatency					 = 2;
+static ID3D12Resource*				  g_mainRenderTargetResource[APP_NUM_BACK_BUFFERS]	 = {};
+static D3D12_CPU_DESCRIPTOR_HANDLE	  g_mainRenderTargetDescriptor[APP_NUM_BACK_BUFFERS] = {};
+static HWND							  g_MainWindow										 = nullptr;
 
 // Forward declarations of helper functions
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
-void CreateRenderTarget();
+bool CreateSwapchain(HWND hWnd);
 void CleanupRenderTarget();
 void WaitForPendingOperations();
+void WaitForSwapchain();
 FrameContext* WaitForNextFrameContext();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -129,6 +135,7 @@ int main(int, char**)
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"ImGui Example", nullptr };
     ::RegisterClassExW(&wc);
     HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"Dear ImGui DirectX12 Example", WS_OVERLAPPEDWINDOW, 100, 100, (int)(1280 * main_scale), (int)(800 * main_scale), nullptr, nullptr, wc.hInstance, nullptr);
+	g_MainWindow = hwnd;
 
     // Initialize Direct3D
     if (!CreateDeviceD3D(hwnd))
@@ -187,9 +194,9 @@ int main(int, char**)
     init_info.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle)            { return g_pd3dSrvDescHeapAlloc.Free(cpu_handle, gpu_handle); };
     ImGui_ImplDX12_Init(&init_info);
 
-    gProfiler.Initialize(5);
+    gProfiler.Initialize(25);
     Span<ID3D12CommandQueue*> queues(&g_pd3dCommandQueue, 1);
-    gGPUProfiler.Initialize(g_pd3dDevice, queues, 2);
+    gGPUProfiler.Initialize(g_pd3dDevice, queues, 4);
 
 #ifdef SUPERLUMINAL_API
 	sSuperluminalHandle = PerformanceAPI_LoadFrom(L"C:\\Program Files\\Superluminal\\Performance\\API\\dll\\x64\\PerformanceAPI.dll", &sSuperluminal);
@@ -262,6 +269,8 @@ int main(int, char**)
         }
         g_SwapChainOccluded = false;
 
+        WaitForSwapchain();
+
         // Start the Dear ImGui frame
 		{
             PROFILE_CPU_SCOPE("NewFrame");
@@ -271,46 +280,30 @@ int main(int, char**)
 			ImGui::NewFrame();
 		}
 
-        DrawProfilerHUD();
+        {
+			PROFILE_CPU_SCOPE("ProfilerHUD");
+			DrawProfilerHUD();
+		}
 
-        // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
         if (show_demo_window)
             ImGui::ShowDemoWindow(&show_demo_window);
 
-        // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
         {
-            PROFILE_CPU_SCOPE("Simple Window");
+			if (ImGui::Begin("Options"))
+			{
+				PROFILE_CPU_SCOPE("Options");
 
-            static float f = 0.0f;
-            static int counter = 0;
+				if (ImGui::SliderInt("Maximum Frame Latency", &g_SwapChainMaximumFrameLatency, 1, 4))
+					CreateSwapchain(g_MainWindow);
+				if (ImGui::Checkbox("Waitable SwapChain", &g_SwapChainEnableWaitableObject))
+					CreateSwapchain(g_MainWindow);
+				if(ImGui::Checkbox("VSync", &g_SwapChainEnableVSync))
+					CreateSwapchain(g_MainWindow);
+				if(ImGui::Checkbox("Allow Tearing", &g_SwapChainEnableTearing))
+					CreateSwapchain(g_MainWindow);
 
-            ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
-
-            ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
-            ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
-            ImGui::Checkbox("Another Window", &show_another_window);
-
-            ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
-            ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
-
-            if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
-                counter++;
-            ImGui::SameLine();
-            ImGui::Text("counter = %d", counter);
-
-            ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
-            ImGui::End();
-        }
-
-        // 3. Show another simple window.
-        if (show_another_window)
-        {
-            PROFILE_CPU_SCOPE("Another Window");
-
-            ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-            ImGui::Text("Hello from another window!");
-            if (ImGui::Button("Close Me"))
-                show_another_window = false;
+				ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+			}
             ImGui::End();
         }
 
@@ -376,9 +369,7 @@ int main(int, char**)
         // Present
 		{
 			PROFILE_CPU_SCOPE("Present");
-
-			HRESULT hr = g_pSwapChain->Present(1, 0); // Present with vsync
-			// HRESULT hr = g_pSwapChain->Present(0, g_SwapChainTearingSupport ? DXGI_PRESENT_ALLOW_TEARING : 0); // Present without vsync
+			HRESULT hr = g_pSwapChain->Present(g_SwapChainEnableVSync ? 1 : 0, !g_SwapChainEnableVSync && g_SwapChainTearingSupport ? DXGI_PRESENT_ALLOW_TEARING : 0); // Present without vsync
 			PROFILE_PRESENT(g_pSwapChain);
 			g_SwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
 			g_frameIndex++;
@@ -405,25 +396,7 @@ int main(int, char**)
 // Helper functions
 bool CreateDeviceD3D(HWND hWnd)
 {
-    // Setup swap chain
-    DXGI_SWAP_CHAIN_DESC1 sd;
-    {
-        ZeroMemory(&sd, sizeof(sd));
-        sd.BufferCount = APP_NUM_BACK_BUFFERS;
-        sd.Width = 0;
-        sd.Height = 0;
-        sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        sd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-        sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        sd.SampleDesc.Count = 1;
-        sd.SampleDesc.Quality = 0;
-        sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        sd.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-        sd.Scaling = DXGI_SCALING_STRETCH;
-        sd.Stereo = FALSE;
-    }
-
-    // [DEBUG] Enable debug interface
+     // [DEBUG] Enable debug interface
 #ifdef DX12_ENABLE_DEBUG_LAYER
     ID3D12Debug* pdx12Debug = nullptr;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&pdx12Debug))))
@@ -501,32 +474,6 @@ bool CreateDeviceD3D(HWND hWnd)
     if (g_fenceEvent == nullptr)
         return false;
 
-    {
-        IDXGIFactory5* dxgiFactory = nullptr;
-        IDXGISwapChain1* swapChain1 = nullptr;
-        if (CreateDXGIFactory1(IID_PPV_ARGS(&dxgiFactory)) != S_OK)
-            return false;
-
-        BOOL allow_tearing = FALSE;
-        dxgiFactory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow_tearing, sizeof(allow_tearing));
-        g_SwapChainTearingSupport = (allow_tearing == TRUE);
-        if (g_SwapChainTearingSupport)
-            sd.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-
-        if (dxgiFactory->CreateSwapChainForHwnd(g_pd3dCommandQueue, hWnd, &sd, nullptr, nullptr, &swapChain1) != S_OK)
-            return false;
-        if (swapChain1->QueryInterface(IID_PPV_ARGS(&g_pSwapChain)) != S_OK)
-            return false;
-        if (g_SwapChainTearingSupport)
-            dxgiFactory->MakeWindowAssociation(hWnd, DXGI_MWA_NO_ALT_ENTER);
-
-        swapChain1->Release();
-        dxgiFactory->Release();
-        g_pSwapChain->SetMaximumFrameLatency(APP_NUM_BACK_BUFFERS);
-        g_hSwapChainWaitableObject = g_pSwapChain->GetFrameLatencyWaitableObject();
-    }
-
-    CreateRenderTarget();
     return true;
 }
 
@@ -555,15 +502,83 @@ void CleanupDeviceD3D()
 #endif
 }
 
-void CreateRenderTarget()
+bool CreateSwapchain(HWND hWnd)
 {
+	CleanupRenderTarget();
+
+    if (g_pSwapChain)
+	{
+		g_pSwapChain->Release();
+		g_pSwapChain = nullptr;
+	}
+
+	// Setup swap chain
+	DXGI_SWAP_CHAIN_DESC1 sd;
+	ZeroMemory(&sd, sizeof(sd));
+	sd.BufferCount		  = APP_NUM_BACK_BUFFERS;
+	sd.Width			  = 0;
+	sd.Height			  = 0;
+	sd.Format			  = DXGI_FORMAT_R8G8B8A8_UNORM;
+	sd.Flags			  = g_SwapChainEnableWaitableObject ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0;
+	sd.BufferUsage		  = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	sd.SampleDesc.Count	  = 1;
+	sd.SampleDesc.Quality = 0;
+	sd.SwapEffect		  = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+	sd.AlphaMode		  = DXGI_ALPHA_MODE_UNSPECIFIED;
+	sd.Scaling			  = DXGI_SCALING_STRETCH;
+	sd.Stereo			  = FALSE;
+
+	IDXGIFactory5*	 dxgiFactory = nullptr;
+	IDXGISwapChain1* swapChain1	 = nullptr;
+	if (CreateDXGIFactory1(IID_PPV_ARGS(&dxgiFactory)) != S_OK)
+		return false;
+
+	BOOL allow_tearing = FALSE;
+	dxgiFactory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow_tearing, sizeof(allow_tearing));
+	g_SwapChainTearingSupport = allow_tearing == TRUE && g_SwapChainEnableTearing;
+	if (g_SwapChainTearingSupport)
+		sd.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+
+	if (dxgiFactory->CreateSwapChainForHwnd(g_pd3dCommandQueue, hWnd, &sd, nullptr, nullptr, &swapChain1) != S_OK)
+		return false;
+	if (swapChain1->QueryInterface(IID_PPV_ARGS(&g_pSwapChain)) != S_OK)
+		return false;
+	if (g_SwapChainTearingSupport)
+		dxgiFactory->MakeWindowAssociation(hWnd, DXGI_MWA_NO_ALT_ENTER);
+
+	swapChain1->Release();
+	dxgiFactory->Release();
+
+    if (g_hSwapChainWaitableObject)
+		CloseHandle(g_hSwapChainWaitableObject);
+
+	if (g_SwapChainEnableWaitableObject)
+	{
+		g_pSwapChain->SetMaximumFrameLatency(g_SwapChainMaximumFrameLatency);
+		g_hSwapChainWaitableObject = g_pSwapChain->GetFrameLatencyWaitableObject();
+	}
+	else
+	{
+		g_hSwapChainWaitableObject = nullptr;
+	}
+	
     for (UINT i = 0; i < APP_NUM_BACK_BUFFERS; i++)
-    {
-        ID3D12Resource* pBackBuffer = nullptr;
-        g_pSwapChain->GetBuffer(i, IID_PPV_ARGS(&pBackBuffer));
-        g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, g_mainRenderTargetDescriptor[i]);
-        g_mainRenderTargetResource[i] = pBackBuffer;
-    }
+	{
+		ID3D12Resource* pBackBuffer = nullptr;
+		g_pSwapChain->GetBuffer(i, IID_PPV_ARGS(&pBackBuffer));
+		g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, g_mainRenderTargetDescriptor[i]);
+		g_mainRenderTargetResource[i] = pBackBuffer;
+	}
+	return true;
+}
+
+void WaitForSwapchain()
+{
+	PROFILE_CPU_SCOPE();
+	if (g_hSwapChainWaitableObject)
+	{
+		::WaitForSingleObject(g_hSwapChainWaitableObject, INFINITE);
+	}
 }
 
 void CleanupRenderTarget()
@@ -589,12 +604,9 @@ FrameContext* WaitForNextFrameContext()
     FrameContext* frame_context = &g_frameContext[g_frameIndex % APP_NUM_FRAMES_IN_FLIGHT];
     if (g_fence->GetCompletedValue() < frame_context->FenceValue)
     {
-        g_fence->SetEventOnCompletion(frame_context->FenceValue, g_fenceEvent);
-        HANDLE waitableObjects[] = { g_hSwapChainWaitableObject, g_fenceEvent };
-        ::WaitForMultipleObjects(2, waitableObjects, TRUE, INFINITE);
-    }
-    else
-        ::WaitForSingleObject(g_hSwapChainWaitableObject, INFINITE);
+		g_fence->SetEventOnCompletion(frame_context->FenceValue, g_fenceEvent);
+		::WaitForSingleObject(g_fenceEvent, INFINITE);
+	}
 
     return frame_context;
 }
@@ -617,12 +629,7 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_SIZE:
         if (g_pd3dDevice != nullptr && wParam != SIZE_MINIMIZED)
         {
-            CleanupRenderTarget();
-            DXGI_SWAP_CHAIN_DESC1 desc = {};
-            g_pSwapChain->GetDesc1(&desc);
-            HRESULT result = g_pSwapChain->ResizeBuffers(0, (UINT)LOWORD(lParam), (UINT)HIWORD(lParam), desc.Format, desc.Flags);
-            assert(SUCCEEDED(result) && "Failed to resize swapchain.");
-            CreateRenderTarget();
+			CreateSwapchain(hWnd);
         }
         return 0;
     case WM_SYSCOMMAND:
