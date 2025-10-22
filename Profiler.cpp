@@ -27,6 +27,11 @@ static uint32 HSV2RGB(float hue, float saturation, float value)
 		   255 << 24;
 }
 
+static uint32 GetFrameColor(uint32 frameIndex)
+{
+	return HSV2RGB(frameIndex % 10 / 10.0f, 0.5f, 0.5f);
+}
+
 static uint32 ColorFromString(const char* pStr)
 {
 	const float saturation = 0.5f;
@@ -635,7 +640,7 @@ void Profiler::OnPresentProcessed(const PresentEntry& entry)
 				gAssert(m_LastProcessedValidPresentID != entry.PresentID);
 				ProfilerEvent event{
 					.pName		= "Present",
-					.Color		= HSV2RGB(0.5f, 0.5f, 0.5f),
+					.Color		= GetFrameColor(pLastValidPresent->FrameIndex),
 					.Depth		= 0,
 					.TicksBegin = pLastValidPresent->DisplayQPC,
 					.TicksEnd	= entry.DisplayQPC,
@@ -698,7 +703,7 @@ void Profiler::Tick()
 	QueryPerformanceCounter((LARGE_INTEGER*)&m_BeginFrameTicks[m_FrameIndex % m_BeginFrameTicks.size()]);
 
 	// Begin a "CPU Frame" event
-	BeginEvent("CPU Frame");
+	BeginEvent("CPU Frame", GetFrameColor(m_FrameIndex));
 }
 
 
