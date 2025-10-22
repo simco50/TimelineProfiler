@@ -55,7 +55,7 @@ static void HandleAssertMessage(const char* pExpression, const char* pFileName, 
 			HandleAssertMessage(#op, __FILE__, __LINE__, __VA_ARGS__); \
 			__debugbreak();                                            \
 		}                                                              \
-	} while (false);
+	} while (false)
 
 #define gVerify(op, expected, ...) \
 	do                        \
@@ -85,6 +85,7 @@ template <typename T, size_t Size>
 using StaticArray = std::array<T, Size>;
 template <typename K, typename V>
 using HashMap = std::unordered_map<K, V>;
+using Mutex = std::mutex;
 
 struct URange
 {
@@ -198,63 +199,86 @@ private:
 
 
 
-// Simple Linear Allocator
+// Linear allocator with stable address
 class LinearAllocator
 {
-public:
-	explicit LinearAllocator(uint32 size)
-		: m_pData(new char[size]), m_Size(size), m_Offset(0)
-	{
-	}
+	public:
+	LinearAllocator()				  = default;
+	constexpr static uint32 cPageSize = 1024 * 2;
 
 	~LinearAllocator()
 	{
-		delete[] m_pData;
+		for (Page& page : Pages)
+			delete[] page.Data.data();
 	}
 
-	LinearAllocator(LinearAllocator&)			 = delete;
-	LinearAllocator& operator=(LinearAllocator&) = delete;
-	LinearAllocator(LinearAllocator&& rhs)
-	{
-		std::swap(m_pData, rhs.m_pData);
-		std::swap(m_Size, rhs.m_Size);
-		uint32 offset = rhs.m_Offset;
-		rhs.m_Offset.store(m_Offset);
-		m_Offset = offset;
-	}
+	LinearAllocator(const LinearAllocator&)			   = default;
+	LinearAllocator& operator=(const LinearAllocator&) = default;
 
 	void Reset()
 	{
-		m_Offset = 0;
+		CurrentPageIndex = 0;
+		for (Page& page : Pages)
+			page.Offset = 0;
 	}
 
-	template <typename T, typename... Args>
-	T* Allocate(Args... args)
+	static constexpr uint32 AlignUp(uint32 value, int alignment)
 	{
-		void* pData	 = Allocate(sizeof(T));
-		T*	  pValue = new (pData) T(std::forward<Args>(args)...);
-		return pValue;
+		uint32 remainder = value % alignment;
+		return remainder > 0 ? value + alignment - remainder : value;
 	}
 
-	void* Allocate(uint32 size)
+	void* Allocate(uint32 size, uint32 alignment)
 	{
-		uint32 offset = m_Offset.fetch_add(size);
-		gAssert(offset + size <= m_Size);
-		return m_pData + offset;
+		if (Pages.empty())
+			AllocatePage(size);
+
+		Page*  pPage		 = &Pages[CurrentPageIndex];
+		uint32 alignedOffset = AlignUp(pPage->Offset, alignment);
+		if (alignedOffset + size > pPage->Data.size())
+		{
+			AllocatePage(size);
+			pPage		  = &Pages[CurrentPageIndex];
+			alignedOffset = pPage->Offset;
+		}
+
+		pPage->Offset = alignedOffset + size;
+		return &pPage->Data[alignedOffset];
 	}
 
 	const char* String(const char* pStr)
 	{
 		uint32 len	 = (uint32)strlen(pStr) + 1;
-		char*  pData = (char*)Allocate(len);
+		char*  pData = (char*)Allocate(len, 1);
 		strcpy_s(pData, len, pStr);
 		return pData;
 	}
 
 private:
-	char*				m_pData;
-	uint32				m_Size;
-	std::atomic<uint32> m_Offset;
+	struct Page
+	{
+		Span<char> Data	  = {};
+		uint32	   Offset = 0;
+	};
+
+	void AllocatePage(uint32 size)
+	{
+		while (++CurrentPageIndex < Pages.size())
+		{
+			if (size <= Pages[CurrentPageIndex].Data.size())
+				return;
+		}
+
+		uint32 pageSize = std::max(size, cPageSize);
+
+		char* pData = new char[pageSize];
+		Pages.push_back({ .Data	  = { pData, (size_t)pageSize },
+						  .Offset = 0 });
+		CurrentPageIndex = (uint32)Pages.size() - 1;
+	}
+
+	uint32		CurrentPageIndex = 0;
+	Array<Page> Pages;
 };
 
 
@@ -283,11 +307,6 @@ static_assert(std::has_unique_object_representations_v<ProfilerEvent>);
 class ProfilerEventData
 {
 public:
-	ProfilerEventData()
-		: Allocator(1 << 16)
-	{
-	}
-
 	LinearAllocator		 Allocator;					  ///< Scratch allocator for frame
 	Array<ProfilerEvent> Events;					  ///< Event storage for frame
 };
@@ -405,8 +424,9 @@ private:
 			bool IsValid() const { return QueryIndexBegin != 0xFFFF && QueryIndexEnd != 0xFFFF; }
 		};
 		static_assert(sizeof(QueryPair) == sizeof(uint32));
-		Array<QueryPair> Pairs;
+		Array<QueryPair>  Pairs;
 		ProfilerEventData Events;
+		uint32			  NumEvents = 0;
 	};
 	QueryData& GetQueryData(uint32 frameIndex) { return m_QueryData[frameIndex % m_FrameLatency]; }
 	QueryData& GetQueryData() { return GetQueryData(m_FrameIndex); }
@@ -455,7 +475,7 @@ private:
 	uint32					  m_FrameIndex		 = 0;		///< Current frame index
 	StaticArray<QueryHeap, 2> m_QueryHeaps;					///< GPU Query Heaps
 	uint64					  m_CPUTickFrequency = 0;		///< Tick frequency of CPU for QPC
-	std::mutex				  m_QueryRangeLock;
+	Mutex					  m_QueryRangeLock;
 
 	WinHandle									   m_CommandListMapLock{}; ///< Lock for accessing commandlist state hashmap
 	HashMap<ID3D12CommandList*, CommandListState*> m_CommandListMap;	   ///< Maps commandlist to index
@@ -612,22 +632,30 @@ private:
 		return m_Tracks[index];
 	}
 
-	int							 m_PresentTrackIndex = -1;
-	std::array<PresentEntry, 32> m_PresentQueue;
-	uint32						 m_LastQueuedPresentID  = 0;
-	uint32						 m_LastQueriedPresentID = 0;
-	uint64						 m_LastProcessedValidPresentQPC = 0;
-	uint32						 m_LastProcessedValidFrame = 0;
+	PresentEntry* GetPresentEntry(uint32 presentID, bool isNewEntry)
+	{
+		PresentEntry& entry = m_PresentQueue[presentID % m_PresentQueue.size()];
+		if (entry.PresentID != presentID && !isNewEntry)
+			return nullptr;
+		return &entry;
+	}
 
-	CPUProfilerCallbacks m_EventCallback;
-	std::mutex			 m_ThreadDataLock; ///< Mutex for accessing thread data
-	Array<EventTrack>	 m_Tracks;
-	Array<uint64>		 m_BeginFrameTicks;
-	uint32				 m_HistorySize	 = 0;		///< History size
-	uint32				 m_FrameIndex	 = 0;		///< The current frame index
-	bool				 m_Paused		 = false;	///< The current pause state
-	bool				 m_QueuedPaused	 = false;	///< The queued pause state
-	bool				 m_IsInitialized = false;
+	int							  m_PresentTrackIndex			= -1;
+	StaticArray<PresentEntry, 32> m_PresentQueue				= {};
+	uint32						  m_LastQueuedPresentID			= 0;
+	uint32						  m_LastQueriedPresentID		= 0;
+	uint32						  m_LastProcessedValidPresentID = 0;
+	uint32						  m_MsToTicks					= 0;
+
+	CPUProfilerCallbacks		 m_EventCallback;
+	Mutex						 m_ThreadDataLock;			///< Mutex for accessing thread data
+	Array<EventTrack>			 m_Tracks;
+	Array<uint64>				 m_BeginFrameTicks;
+	uint32						 m_HistorySize	 = 0;		///< History size
+	uint32						 m_FrameIndex	 = 0;		///< The current frame index
+	bool						 m_Paused		 = false;	///< The current pause state
+	bool						 m_QueuedPaused	 = false;	///< The queued pause state
+	bool						 m_IsInitialized = false;
 };
 
 // Helper RAII-style structure to push and pop a CPU sample region

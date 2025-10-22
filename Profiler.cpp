@@ -10,15 +10,12 @@
 Profiler gProfiler;
 GPUProfiler gGPUProfiler;
 
-static uint32 ColorFromString(const char* pStr, float hueMin, float hueMax)
+
+static uint32 HSV2RGB(float hue, float saturation, float value)
 {
-	const float saturation = 0.5f;
-	const float value	   = 0.6f;
-	float		hue		   = (float)std::hash<std::string>{}(pStr) / std::numeric_limits<size_t>::max();
-	hue					   = hueMin + hue * (hueMax - hueMin);
-	float R				   = std::max(std::min(fabs(hue * 6 - 3) - 1, 1.0f), 0.0f);
-	float G				   = std::max(std::min(2 - fabs(hue * 6 - 2), 1.0f), 0.0f);
-	float B				   = std::max(std::min(2 - fabs(hue * 6 - 4), 1.0f), 0.0f);
+	float R = std::max(std::min(fabs(hue * 6 - 3) - 1, 1.0f), 0.0f);
+	float G = std::max(std::min(2 - fabs(hue * 6 - 2), 1.0f), 0.0f);
+	float B = std::max(std::min(2 - fabs(hue * 6 - 4), 1.0f), 0.0f);
 
 	R = ((R - 1) * saturation + 1) * value;
 	G = ((G - 1) * saturation + 1) * value;
@@ -26,8 +23,18 @@ static uint32 ColorFromString(const char* pStr, float hueMin, float hueMax)
 
 	return ((uint8)roundf(R * 255.0f) << 0) |
 		   ((uint8)roundf(G * 255.0f) << 8) |
-		   ((uint8)roundf(B * 255.0f) << 16);
+		   ((uint8)roundf(B * 255.0f) << 16) |
+		   255 << 24;
 }
+
+static uint32 ColorFromString(const char* pStr, float hueMin, float hueMax)
+{
+	const float saturation = 0.5f;
+	const float value	   = 0.6f;
+	float		hue		   = (float)std::hash<std::string>{}(pStr) / std::numeric_limits<size_t>::max();
+	return HSV2RGB(hue, saturation, value);
+}
+
 
 //-----------------------------------------------------------------------------
 // [SECTION] GPU Profiler
@@ -107,6 +114,11 @@ void GPUProfiler::Shutdown()
 	for (auto& commandListState : m_CommandListMap)
 		delete commandListState.second;
 	m_CommandListMap.clear();
+
+	m_QueryData.clear();
+
+	m_Queues.clear();
+	m_QueueIndexMap.clear();
 }
 
 void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName, uint32 color, const char* pFilePath, uint32 lineNumber)
@@ -183,17 +195,11 @@ void GPUProfiler::Tick()
 		std::scoped_lock lock(m_QueryRangeLock);
 
 		QueryData& queryData = GetQueryData(m_FrameToReadback);
-
-		for (uint32 i = 0; i < queryData.Pairs.size(); ++i)
+		for (uint32 i = 0; i < queryData.NumEvents; ++i)
 		{
 			ProfilerEvent&		  event		 = queryData.Events.Events[i];
 			QueryData::QueryPair& queryRange = queryData.Pairs[i];
-			if (!queryRange.IsValid())
-			{
-				event.TicksBegin = 0;
-				event.TicksEnd	 = 0;
-				continue;
-			}
+			gAssert(queryRange.IsValid());
 
 			const QueueInfo&   queue   = m_Queues[event.QueueIndex];
 			Span<const uint64> queries = m_QueryHeaps[queue.QueryHeapIndex].GetQueryData(m_FrameToReadback);
@@ -207,6 +213,8 @@ void GPUProfiler::Tick()
 
 			gProfiler.AddEvent(queue.TrackIndex, event, m_FrameToReadback);
 		}
+		queryData.Events.Allocator.Reset();
+		queryData.NumEvents = 0;
 
 		++m_FrameToReadback;
 	}
@@ -227,8 +235,7 @@ void GPUProfiler::Tick()
 		for (QueryHeap& heap : m_QueryHeaps)
 			heap.Reset(m_FrameIndex);
 
-		QueryData& queryData = GetQueryData();
-		queryData.Events.Allocator.Reset();
+		m_EventIndex = 0;
 	}
 }
 
@@ -249,6 +256,7 @@ void GPUProfiler::ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3
 	uint32			   queueIndex  = it->second;
 	ActiveEventStack&  eventStack  = m_QueueEventStack[queueIndex];
 	QueryData&		   queryData   = GetQueryData();
+	queryData.NumEvents			   = m_EventIndex;
 
 	for (ID3D12CommandList* pCmd : commandLists)
 	{
@@ -464,7 +472,7 @@ bool GPUProfiler::QueryHeap::IsFrameComplete(uint64 frameIndex)
 		return true;
 
 	uint64 fenceValue = frameIndex;
-	if (fenceValue <= m_LastCompletedFence)
+	if (fenceValue <= m_LastCompletedFence && m_LastCompletedFence > 0)
 		return true;
 	m_LastCompletedFence = std::max(m_pResolveFence->GetCompletedValue(), m_LastCompletedFence);
 	return fenceValue <= m_LastCompletedFence;
@@ -479,10 +487,15 @@ void Profiler::Initialize(uint32 historySize)
 	m_HistorySize	= historySize;
 	m_IsInitialized = true;
 	m_BeginFrameTicks.resize(historySize);
+
+	uint64 frequency = 0;
+	QueryPerformanceFrequency((LARGE_INTEGER*)&frequency);
+	m_MsToTicks = (uint32)(frequency / 1000);
 }
 
 void Profiler::Shutdown()
 {
+	m_Tracks.clear();
 }
 
 // Begin a new CPU event on the current thread
@@ -540,8 +553,8 @@ void Profiler::AddEvent(uint32 trackIndex, const ProfilerEvent& event, uint32 fr
 	ProfilerEventData& data	 = track.GetFrameData(frameIndex);
 
 	// Name must be copied
-	ProfilerEvent	   newEvent = event;
-	newEvent.pName				= data.Allocator.String(newEvent.pName);
+	ProfilerEvent newEvent = event;
+	newEvent.pName		   = data.Allocator.String(newEvent.pName);
 
 	data.Events.push_back(newEvent);
 }
@@ -563,11 +576,11 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 			if (m_LastQueuedPresentID > presentID)
 				m_LastQueriedPresentID = 0;
 
-			PresentEntry& entry = m_PresentQueue[presentID % m_PresentQueue.size()];
-			QueryPerformanceCounter((LARGE_INTEGER*)&entry.PresentQPC);
-			entry.PresentID		= presentID;
-			entry.DisplayQPC	= 0;
-			entry.FrameIndex	= m_FrameIndex;
+			PresentEntry* pEntry = GetPresentEntry(presentID, true);
+			QueryPerformanceCounter((LARGE_INTEGER*)&pEntry->PresentQPC);
+			pEntry->PresentID	= presentID;
+			pEntry->DisplayQPC	= 0;
+			pEntry->FrameIndex	= m_FrameIndex;
 
 			m_LastQueuedPresentID = presentID;
 		}
@@ -578,28 +591,26 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 	{
 		// Update the entry that was presented
 		{
-			uint32		  presentID	 = frameStats.PresentCount;
-			uint32		  entryIndex = presentID % m_PresentQueue.size();
-			PresentEntry& entry		 = m_PresentQueue[entryIndex];
-			if (entry.PresentID == presentID)
+			uint32		  presentID = frameStats.PresentCount;
+			PresentEntry* pEntry	= GetPresentEntry(presentID, false);
+			if (pEntry)
 			{
-				entry.DisplayQPC = frameStats.SyncQPCTime.QuadPart;
+				pEntry->DisplayQPC = frameStats.SyncQPCTime.QuadPart;
 			}
 		}
 
-		for (uint32 i = m_LastQueriedPresentID + 1; i <= frameStats.PresentCount; ++i)
+		// Process all the entries up until the new present count
+		for (uint32 presentID = m_LastQueriedPresentID + 1; presentID <= frameStats.PresentCount; ++presentID)
 		{
-			uint32		  entryIndex = i % m_PresentQueue.size();
-			PresentEntry& entry		 = m_PresentQueue[entryIndex];
-			if (entry.PresentID != i)
+			PresentEntry* pEntry = GetPresentEntry(presentID, false);
+			if (pEntry == nullptr)
 			{
 				// Queue overflow - Skip
 				continue;
 			}
 
-			entry.IsDropped = entry.DisplayQPC == 0;
-
-			OnPresentProcessed(entry);
+			pEntry->IsDropped = pEntry->DisplayQPC == 0;
+			OnPresentProcessed(*pEntry);
 		}
 
 		m_LastQueriedPresentID = frameStats.PresentCount;
@@ -611,22 +622,46 @@ void Profiler::OnPresentProcessed(const PresentEntry& entry)
 {
 	if (!entry.IsDropped)
 	{
-		if (m_LastProcessedValidPresentQPC != 0)
+		const PresentEntry* pLastValidPresent = GetPresentEntry(m_LastProcessedValidPresentID, false);
+		if (pLastValidPresent != nullptr)
 		{
-			ProfilerEvent event;
-			event.pName		 = "Present";
-			event.Color		 = ColorFromString(event.pName, 0.0f, 0.5f);
-			event.TicksBegin = m_LastProcessedValidPresentQPC;
-			event.TicksEnd	 = entry.DisplayQPC;
-			event.Depth		 = 0;
-
 			// The end of the present of the last frame is the start of the current
 			// So insert an event in the last non-dropped frame that spans this duration
-			AddEvent(m_PresentTrackIndex, event, m_LastProcessedValidFrame);
+			{
+				ProfilerEvent event{
+					.pName		= "Present",
+					.Color		= HSV2RGB(0.5f, 0.5f, 0.5f),
+					.Depth		= 0,
+					.TicksBegin = pLastValidPresent->DisplayQPC,
+					.TicksEnd	= entry.DisplayQPC,
+				};
+
+				
+				AddEvent(m_PresentTrackIndex, event, pLastValidPresent->FrameIndex);
+			}
+
+			// All presents after the last valid one and before the current are dropped
+			for (uint32 presentID = pLastValidPresent->PresentID + 1; presentID < entry.PresentID; ++presentID)
+			{
+				const PresentEntry* pEntry = GetPresentEntry(presentID, false);
+				if (pEntry)
+				{
+					gAssert(pEntry->IsDropped);
+					ProfilerEvent event
+					{
+						.pName		= "Discarded",
+						.Color		= HSV2RGB(0.0f, 0.5f, 0.5f),
+						.Depth		= 1,
+						.TicksBegin = entry.DisplayQPC,
+						.TicksEnd	= entry.DisplayQPC + m_MsToTicks,
+					};
+
+					AddEvent(m_PresentTrackIndex, event, pEntry->FrameIndex);
+				}
+			}
 		}
 
-		m_LastProcessedValidPresentQPC = entry.DisplayQPC;
-		m_LastProcessedValidFrame	   = entry.FrameIndex;
+		m_LastProcessedValidPresentID  = entry.PresentID;
 	}
 }
 
@@ -649,9 +684,9 @@ void Profiler::Tick()
 	++m_FrameIndex;
 
 	std::scoped_lock lock(m_ThreadDataLock);
-	for (uint32 threadIndex = 0; threadIndex < (uint32)m_Tracks.size(); ++threadIndex)
+	for (EventTrack& track : m_Tracks)
 	{
-		ProfilerEventData& eventData = m_Tracks[threadIndex].GetFrameData(m_FrameIndex);
+		ProfilerEventData& eventData = track.GetFrameData(m_FrameIndex);
 		eventData.Events.clear();
 		eventData.Allocator.Reset();
 	}
