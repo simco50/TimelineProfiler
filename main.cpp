@@ -41,6 +41,7 @@ static const int APP_SRV_HEAP_SIZE = 64;
 struct FrameContext
 {
     ID3D12CommandAllocator*     CommandAllocator;
+    ID3D12CommandAllocator*     PresentCommandAllocator;
     UINT64                      FenceValue;
 };
 
@@ -113,6 +114,13 @@ static int							  g_SwapChainMaximumFrameLatency					 = 2;
 static ID3D12Resource*				  g_mainRenderTargetResource[APP_NUM_BACK_BUFFERS]	 = {};
 static D3D12_CPU_DESCRIPTOR_HANDLE	  g_mainRenderTargetDescriptor[APP_NUM_BACK_BUFFERS] = {};
 static HWND							  g_MainWindow										 = nullptr;
+
+static ID3D12Resource* g_GPUWorkloadResources[2];
+static float		   g_CPUWorkload = 0.0f;
+static float		   g_CPUWorkloadVariance = 0.0f;
+static int			   g_GPUWorkload = 0;
+static float			  g_GPUWorkloadVariance = 0.0f;
+
 
 // Forward declarations of helper functions
 bool CreateDeviceD3D(HWND hWnd);
@@ -270,6 +278,7 @@ int main(int, char**)
         g_SwapChainOccluded = false;
 
         WaitForSwapchain();
+        FrameContext* frameCtx = WaitForNextFrameContext();
 
         // Start the Dear ImGui frame
 		{
@@ -302,10 +311,36 @@ int main(int, char**)
 				if(ImGui::Checkbox("Allow Tearing", &g_SwapChainEnableTearing))
 					CreateSwapchain(g_MainWindow);
 
+                ImGui::SliderFloat("CPU Load", &g_CPUWorkload, 0.0f, 33.66f, "%.2f");
+                ImGui::SliderFloat("CPU Load Variance", &g_CPUWorkloadVariance, 0.0f, 1.0f, "%.2f");
+                ImGui::SliderInt("GPU Load", &g_GPUWorkload, 0, 500);
+                ImGui::SliderFloat("GPU Load Variance", &g_GPUWorkloadVariance, 0.0f, 1.0f, "%.2f");
+
 				ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
 			}
             ImGui::End();
         }
+
+        float randomV_CPU = ((float)rand() / RAND_MAX) * 2 - 1;
+		float cpu_workload = g_CPUWorkload + g_CPUWorkload * randomV_CPU * g_CPUWorkloadVariance;
+
+        float randomV_GPU = ((float)rand() / RAND_MAX) * 2 - 1;
+		int gpu_workload = (int)(g_GPUWorkload + g_GPUWorkload * randomV_GPU * g_GPUWorkloadVariance);
+
+        if (cpu_workload > 0.0f)
+		{
+            PROFILE_CPU_SCOPE("CPU Load");
+
+			LARGE_INTEGER freq, start, now;
+			QueryPerformanceFrequency(&freq);
+			QueryPerformanceCounter(&start);
+
+			double target = cpu_workload * 0.001f * freq.QuadPart; // 2 ms in ticks
+			do
+			{
+				QueryPerformanceCounter(&now);
+			} while ((now.QuadPart - start.QuadPart) < target);
+		}
 
         // Rendering
         {
@@ -313,21 +348,39 @@ int main(int, char**)
             ImGui::Render();
         }
 
-        FrameContext* frameCtx = WaitForNextFrameContext();
         UINT backBufferIdx = g_pSwapChain->GetCurrentBackBufferIndex();
+		
         frameCtx->CommandAllocator->Reset();
+		g_pd3dCommandList->Reset(frameCtx->CommandAllocator, nullptr);
 
-        D3D12_RESOURCE_BARRIER barrier = {};
-        barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Flags                  = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        barrier.Transition.pResource   = g_mainRenderTargetResource[backBufferIdx];
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-        barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        g_pd3dCommandList->Reset(frameCtx->CommandAllocator, nullptr);
+        {
+            PROFILE_GPU_SCOPE(g_pd3dCommandList, "GPU Workload");
+			for (int i = 0; i < gpu_workload; ++i)
+				g_pd3dCommandList->CopyResource(g_GPUWorkloadResources[0], g_GPUWorkloadResources[1]);
+        }
+
+        g_pd3dCommandList->Close();
+
+	    {
+			Span<ID3D12CommandList*> cmdlists((ID3D12CommandList**)&g_pd3dCommandList, 1);
+        	PROFILE_EXECUTE_COMMANDLISTS(g_pd3dCommandQueue, cmdlists);
+			g_pd3dCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&g_pd3dCommandList);
+		}
+
+		frameCtx->PresentCommandAllocator->Reset();
+		g_pd3dCommandList->Reset(frameCtx->CommandAllocator, nullptr);
+
 
         {
             PROFILE_GPU_SCOPE(g_pd3dCommandList, "Render");
+
+            D3D12_RESOURCE_BARRIER barrier = {};
+			barrier.Type				   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barrier.Flags				   = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			barrier.Transition.pResource   = g_mainRenderTargetResource[backBufferIdx];
+			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+			barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
 
             g_pd3dCommandList->ResourceBarrier(1, &barrier);
 
@@ -341,17 +394,12 @@ int main(int, char**)
             barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
             g_pd3dCommandList->ResourceBarrier(1, &barrier);
         }
+
         g_pd3dCommandList->Close();
 
-        {
-			{
-				PROFILE_CPU_SCOPE("Profiler::ExecuteCommandLists");
-
-				Span<ID3D12CommandList*> cmdlists((ID3D12CommandList**)&g_pd3dCommandList, 1);
-				PROFILE_EXECUTE_COMMANDLISTS(g_pd3dCommandQueue, cmdlists);
-			}
-
-            PROFILE_CPU_SCOPE("ExecuteCommandLists");
+	    {
+			Span<ID3D12CommandList*> cmdlists((ID3D12CommandList**)&g_pd3dCommandList, 1);
+        	PROFILE_EXECUTE_COMMANDLISTS(g_pd3dCommandQueue, cmdlists);
 			g_pd3dCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&g_pd3dCommandList);
 		}
 
@@ -460,8 +508,12 @@ bool CreateDeviceD3D(HWND hWnd)
     }
 
     for (UINT i = 0; i < APP_NUM_FRAMES_IN_FLIGHT; i++)
-        if (g_pd3dDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_frameContext[i].CommandAllocator)) != S_OK)
-            return false;
+	{
+		if (g_pd3dDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_frameContext[i].CommandAllocator)) != S_OK)
+			return false;
+        if (g_pd3dDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_frameContext[i].PresentCommandAllocator)) != S_OK)
+			return false;
+	}
 
     if (g_pd3dDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_frameContext[0].CommandAllocator, nullptr, IID_PPV_ARGS(&g_pd3dCommandList)) != S_OK ||
         g_pd3dCommandList->Close() != S_OK)
@@ -474,16 +526,59 @@ bool CreateDeviceD3D(HWND hWnd)
     if (g_fenceEvent == nullptr)
         return false;
 
+
+	D3D12_RESOURCE_DESC bufferDesc{
+		.Dimension		  = D3D12_RESOURCE_DIMENSION_BUFFER,
+		.Alignment		  = 0,
+		.Width			  = 32 * 1024 * 1024,
+		.Height			  = 1,
+		.DepthOrArraySize = 1,
+		.MipLevels		  = 1,
+		.Format			  = DXGI_FORMAT_UNKNOWN,
+		.SampleDesc		  = {
+				  .Count   = 1,
+				  .Quality = 0,
+		  },
+		.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+		.Flags	= D3D12_RESOURCE_FLAG_NONE,
+	};
+
+	D3D12_HEAP_PROPERTIES heapProps{
+		.Type				  = D3D12_HEAP_TYPE_DEFAULT,
+		.CPUPageProperty	  = D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+		.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN,
+		.CreationNodeMask	  = 0,
+		.VisibleNodeMask	  = 0,
+	};
+
+    for (int i = 0; i < 2; ++i)
+		g_pd3dDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES, &bufferDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_GPUWorkloadResources[i]));
+
     return true;
 }
 
 void CleanupDeviceD3D()
 {
     CleanupRenderTarget();
+
+	for (int i = 0; i < 2; ++i)
+		g_GPUWorkloadResources[i]->Release();
+
     if (g_pSwapChain) { g_pSwapChain->SetFullscreenState(false, nullptr); g_pSwapChain->Release(); g_pSwapChain = nullptr; }
     if (g_hSwapChainWaitableObject != nullptr) { CloseHandle(g_hSwapChainWaitableObject); }
-    for (UINT i = 0; i < APP_NUM_FRAMES_IN_FLIGHT; i++)
-        if (g_frameContext[i].CommandAllocator) { g_frameContext[i].CommandAllocator->Release(); g_frameContext[i].CommandAllocator = nullptr; }
+	for (UINT i = 0; i < APP_NUM_FRAMES_IN_FLIGHT; i++)
+	{
+		if (g_frameContext[i].CommandAllocator)
+		{
+			g_frameContext[i].CommandAllocator->Release();
+			g_frameContext[i].CommandAllocator = nullptr;
+		}
+        if (g_frameContext[i].PresentCommandAllocator)
+		{
+			g_frameContext[i].PresentCommandAllocator->Release();
+			g_frameContext[i].PresentCommandAllocator = nullptr;
+		}
+	}
     if (g_pd3dCommandQueue) { g_pd3dCommandQueue->Release(); g_pd3dCommandQueue = nullptr; }
     if (g_pd3dCommandList) { g_pd3dCommandList->Release(); g_pd3dCommandList = nullptr; }
     if (g_pd3dRtvDescHeap) { g_pd3dRtvDescHeap->Release(); g_pd3dRtvDescHeap = nullptr; }

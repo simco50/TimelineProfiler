@@ -750,10 +750,11 @@ void DrawProfilerHUD()
 		ImGui::EndPopup();
 	}
 
-	if (ImGui::IsKeyPressed(ImGuiKey_Space))
-	{
+	if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Space))
 		context.IsPaused = !context.IsPaused;
-	}
+
+	if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+		ImGui::SetWindowFocus();
 
 	gProfiler.SetPaused(context.IsPaused);
 	gGPUProfiler.SetPaused(context.IsPaused);
