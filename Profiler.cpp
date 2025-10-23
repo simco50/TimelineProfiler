@@ -581,98 +581,87 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 			if (m_LastQueuedPresentID > presentID || m_pPresentSwapChain != pSwapChain)
 			{
 				m_LastQueriedPresentID = 0;
+				m_LastProcessedPresentID = 0;
 				m_PresentQueue		   = {};
 				m_pPresentSwapChain	   = pSwapChain;
 			}
 
 			PresentEntry* pEntry = GetPresentEntry(presentID, true);
+			*pEntry				 = {};
 			QueryPerformanceCounter((LARGE_INTEGER*)&pEntry->PresentQPC);
-			pEntry->PresentID	= presentID;
-			pEntry->DisplayQPC	= 0;
-			pEntry->FrameIndex	= m_FrameIndex;
+			pEntry->PresentID  = presentID;
+			pEntry->FrameIndex = m_FrameIndex;
 
 			m_LastQueuedPresentID = presentID;
 		}
-	}
 
-	DXGI_FRAME_STATISTICS frameStats{};
-	while (SUCCEEDED(pSwapChain->GetFrameStatistics(&frameStats)) && frameStats.PresentCount > m_LastQueriedPresentID)
-	{
-		// Update the entry that was presented
+		DXGI_FRAME_STATISTICS frameStats{};
+		while (SUCCEEDED(pSwapChain->GetFrameStatistics(&frameStats)) && frameStats.PresentCount > m_LastQueriedPresentID)
 		{
+			gAssert(frameStats.SyncQPCTime.QuadPart != 0);
+
+			// Update the entry that was presented. All the ones before that were not queried are considered dropped.
 			uint32		  presentID = frameStats.PresentCount;
 			PresentEntry* pEntry	= GetPresentEntry(presentID, false);
 			if (pEntry)
-			{
 				pEntry->DisplayQPC = frameStats.SyncQPCTime.QuadPart;
-			}
+
+			m_LastQueriedPresentID = frameStats.PresentCount;
 		}
-
-		// Process all the entries up until the new present count
-		for (uint32 presentID = m_LastQueriedPresentID + 1; presentID <= frameStats.PresentCount; ++presentID)
-		{
-			PresentEntry* pEntry = GetPresentEntry(presentID, false);
-			if (pEntry == nullptr)
-			{
-				// Queue overflow - Skip
-				continue;
-			}
-
-			pEntry->IsDropped = pEntry->DisplayQPC == 0;
-			OnPresentProcessed(*pEntry);
-		}
-
-		m_LastQueriedPresentID = frameStats.PresentCount;
 	}
-}
 
+	uint32 stackSize = 0;
 
-void Profiler::OnPresentProcessed(const PresentEntry& entry)
-{
-	if (!entry.IsDropped)
+	// Process all entries up until the last present
+	for (int presentID = m_LastProcessedPresentID + 1; presentID < m_LastQueriedPresentID; ++presentID)
 	{
-		const PresentEntry* pLastValidPresent = GetPresentEntry(m_LastProcessedValidPresentID, false);
-		if (pLastValidPresent != nullptr)
+		const PresentEntry* pToProcessEntry	  = GetPresentEntry(presentID, false);
+		const PresentEntry* pCurrPresentEntry = GetPresentEntry(m_LastQueriedPresentID, false);
+		if (!pCurrPresentEntry)
 		{
-			// The end of the present of the last frame is the start of the current
-			// So insert an event in the last non-dropped frame that spans this duration
+			m_LastProcessedPresentID = m_LastQueriedPresentID;
+			break;
+		}
+
+		if (pToProcessEntry)
+		{
+			if (pToProcessEntry->DisplayQPC != ~0ull)
 			{
-				gAssert(m_LastProcessedValidPresentID != entry.PresentID);
+				// If the timing of the refresh is the same as the current frame, stack the events. 
+				// Wait for the next frame with a different refresh time
+				if (pCurrPresentEntry->DisplayQPC == pToProcessEntry->DisplayQPC)
+				{
+					break;
+				}
+
 				ProfilerEvent event{
 					.pName		= "Present",
-					.Color		= GetFrameColor(pLastValidPresent->FrameIndex),
-					.Depth		= 0,
-					.TicksBegin = pLastValidPresent->DisplayQPC,
-					.TicksEnd	= entry.DisplayQPC,
+					.Color		= GetFrameColor(pToProcessEntry->FrameIndex),
+					.Depth		= stackSize,
+					.TicksBegin = pToProcessEntry->DisplayQPC,
+					.TicksEnd	= pCurrPresentEntry->DisplayQPC,
 				};
-				
-				AddEvent(m_PresentTrackIndex, event, pLastValidPresent->FrameIndex);
+				++stackSize;
+
+				AddEvent(m_PresentTrackIndex, event, pToProcessEntry->FrameIndex);
 			}
-
-			// All presents after the last valid one and before the current are dropped
-			for (uint32 presentID = pLastValidPresent->PresentID + 1; presentID < entry.PresentID; ++presentID)
+			else
 			{
-				const PresentEntry* pEntry = GetPresentEntry(presentID, false);
-				if (pEntry)
-				{
-					gAssert(pEntry->IsDropped);
-					ProfilerEvent event
-					{
-						.pName		= "Discarded",
-						.Color		= HSV2RGB(0.0f, 0.5f, 0.5f),
-						.Depth		= 1,
-						.TicksBegin = entry.DisplayQPC,
-						.TicksEnd	= entry.DisplayQPC + m_MsToTicks,
-					};
-
-					AddEvent(m_PresentTrackIndex, event, pEntry->FrameIndex);
-				}
+				ProfilerEvent event{
+					.pName		= "Discarded",
+					.Color		= GetFrameColor(pToProcessEntry->FrameIndex),
+					.Depth		= 1,
+					.TicksBegin = pCurrPresentEntry->DisplayQPC,
+					.TicksEnd	= pCurrPresentEntry->DisplayQPC + m_MsToTicks,
+				};
+				AddEvent(m_PresentTrackIndex, event, pToProcessEntry->FrameIndex);
 			}
 		}
 
-		m_LastProcessedValidPresentID  = entry.PresentID;
+		m_LastProcessedPresentID = presentID;
 	}
 }
+
 
 
 // Process the last frame and advance

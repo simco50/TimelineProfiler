@@ -609,14 +609,11 @@ public:
 private:
 	struct PresentEntry
 	{
-		uint32 PresentID = ~0u;
-		uint64 PresentQPC = 0;
-		uint64 DisplayQPC = 0;
-		bool   IsDropped  = false;
+		uint32 PresentID  = ~0u;
+		uint64 PresentQPC = ~0u;
+		uint64 DisplayQPC = ~0ull;
 		uint32 FrameIndex = 0;
-    };
-
-	void OnPresentProcessed(const PresentEntry& entry);
+	};
 
 	int& GetCurrentThreadTrackIndex()
 	{
@@ -640,13 +637,13 @@ private:
 		return &entry;
 	}
 
-	IDXGISwapChain*				  m_pPresentSwapChain			= nullptr;
-	int							  m_PresentTrackIndex			= -1;
-	StaticArray<PresentEntry, 32> m_PresentQueue				= {};
-	uint32						  m_LastQueuedPresentID			= 0;
-	uint32						  m_LastQueriedPresentID		= 0;
-	uint32						  m_LastProcessedValidPresentID = 0;
-	uint32						  m_MsToTicks					= 0;
+	IDXGISwapChain*				  m_pPresentSwapChain		  = nullptr;
+	int							  m_PresentTrackIndex		  = -1;
+	StaticArray<PresentEntry, 32> m_PresentQueue			  = {};
+	uint32						  m_LastQueuedPresentID		  = 0;
+	uint32						  m_LastQueriedPresentID	  = 0;
+	uint32						  m_LastProcessedPresentID	  = 0;
+	uint32						  m_MsToTicks				  = 0;
 
 	CPUProfilerCallbacks		 m_EventCallback;
 	Mutex						 m_ThreadDataLock;			///< Mutex for accessing thread data
