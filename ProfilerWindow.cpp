@@ -209,7 +209,7 @@ void UpdateTrace(TraceContext& context)
 	URange cpuRange = gProfiler.GetFrameRange();
 	for (const Profiler::EventTrack& track : gProfiler.GetTracks())
 	{
-		for (const ProfilerEvent& event : track.GetFrameData(cpuRange.Begin).Events)
+		for (const ProfilerEvent& event : track.GetFrameData(cpuRange.Begin))
 			context.TraceStream << Sprintf("{\"pid\":0,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", track.Index, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
 	}
 }
@@ -491,7 +491,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				*/
 				for (uint32 frameIndex = cpuRange.Begin; frameIndex < cpuRange.End; ++frameIndex)
 				{
-					DrawTrack(pTrack->GetFrameData(frameIndex).Events, frameIndex, trackDepth);
+					DrawTrack(pTrack->GetFrameData(frameIndex), frameIndex, trackDepth);
 				}
 				cursor.y += trackDepth * style.GetBarHeight();
 			}
@@ -633,7 +633,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				for (const Profiler::EventTrack& track : gProfiler.GetTracks())
 				{
 					const ProfilerEventData& eventData = track.GetFrameData(i);
-					for (const ProfilerEvent& event : eventData.Events)
+					for (const ProfilerEvent& event : eventData)
 					{
 						if (GetEventHash(event) == selectedEvent.Hash)
 						{

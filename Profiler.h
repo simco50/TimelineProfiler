@@ -30,6 +30,7 @@
 #include <span>
 #include <unordered_map>
 #include <vector>
+#include <queue>
 
 void DrawProfilerHUD();
 
@@ -199,86 +200,108 @@ private:
 
 
 
-// Linear allocator with stable address
-class LinearAllocator
+// Thread-safe page allocator that recycles pages based on ID
+struct ProfilerAllocator
 {
-	public:
-	LinearAllocator()				  = default;
-	constexpr static uint32 cPageSize = 1024 * 2;
+public:
+	static constexpr uint32 cPageSize = 2 * 1024;
 
-	~LinearAllocator()
-	{
-		for (Page& page : Pages)
-			delete[] page.Data.data();
-	}
-
-	LinearAllocator(const LinearAllocator&)			   = default;
-	LinearAllocator& operator=(const LinearAllocator&) = default;
-
-	void Reset()
-	{
-		CurrentPageIndex = 0;
-		for (Page& page : Pages)
-			page.Offset = 0;
-	}
-
-	static constexpr uint32 AlignUp(uint32 value, int alignment)
-	{
-		uint32 remainder = value % alignment;
-		return remainder > 0 ? value + alignment - remainder : value;
-	}
-
-	void* Allocate(uint32 size, uint32 alignment)
-	{
-		if (Pages.empty())
-			AllocatePage(size);
-
-		Page*  pPage		 = &Pages[CurrentPageIndex];
-		uint32 alignedOffset = AlignUp(pPage->Offset, alignment);
-		if (alignedOffset + size > pPage->Data.size())
-		{
-			AllocatePage(size);
-			pPage		  = &Pages[CurrentPageIndex];
-			alignedOffset = pPage->Offset;
-		}
-
-		pPage->Offset = alignedOffset + size;
-		return &pPage->Data[alignedOffset];
-	}
-
-	const char* String(const char* pStr)
-	{
-		uint32 len	 = (uint32)strlen(pStr) + 1;
-		char*  pData = (char*)Allocate(len, 1);
-		strcpy_s(pData, len, pStr);
-		return pData;
-	}
-
-private:
 	struct Page
 	{
-		Span<char> Data	  = {};
-		uint32	   Offset = 0;
-	};
+		uint32 ID	= 0;
+		uint32 Size = 0;
 
-	void AllocatePage(uint32 size)
-	{
-		while (++CurrentPageIndex < Pages.size())
+		void* GetData()
 		{
-			if (size <= Pages[CurrentPageIndex].Data.size())
-				return;
+			return static_cast<void*>(this + 1);
 		}
 
-		uint32 pageSize = std::max(size, cPageSize);
+		static Page* Create(uint32 size)
+		{
+			void* pData = new char[sizeof(Page) + size];
+			Page* pPage = new (pData) Page;
+			pPage->Size = size;
+			return pPage;
+		}
 
-		char* pData = new char[pageSize];
-		Pages.push_back({ .Data	  = { pData, (size_t)pageSize },
-						  .Offset = 0 });
-		CurrentPageIndex = (uint32)Pages.size() - 1;
+		static void Release(Page* pPage)
+		{
+			char* pData = reinterpret_cast<char*>(pPage);
+			delete[] pData;
+		}
+	};
+	static_assert(std::is_trivially_destructible_v<Page>);
+
+	void Release()
+	{
+		while (!AllocatedPages.empty())
+		{
+			Page* pPage = AllocatedPages.front();
+			Page::Release(pPage);
+			AllocatedPages.pop();
+		}
+		while (FreePages.empty())
+		{
+			Page* pPage = FreePages.back();
+			Page::Release(pPage);
+			FreePages.pop_back();
+		}
 	}
 
-	uint32		CurrentPageIndex = 0;
-	Array<Page> Pages;
+	Page* AllocatePage(uint32 id)
+	{
+		std::lock_guard m(PageLock);
+
+		Page* pPage = nullptr;
+		if (FreePages.empty())
+		{
+			pPage = Page::Create(cPageSize);
+			++NumPages;
+		}
+		else
+		{
+			pPage = FreePages.back();
+			FreePages.pop_back();
+		}
+		pPage->ID = id;
+		AllocatedPages.push(pPage);
+		return pPage;
+	}
+
+	bool IsValidPage(uint32 id)
+	{
+		return id >= MinValidID;
+	}
+
+	void Evict(uint32 id)
+	{
+		std::lock_guard m(PageLock);
+
+		gAssert(NumPages == FreePages.size() + AllocatedPages.size());
+
+		while (!AllocatedPages.empty())
+		{
+			Page* pPage = AllocatedPages.front();
+			if (id >= pPage->ID)
+			{
+				FreePages.push_back(pPage);
+				AllocatedPages.pop();
+			}
+			else
+			{
+				break;
+			}
+		}
+
+		MinValidID = id + 1;
+	}
+	
+private:
+	std::mutex		  PageLock;
+	Array<Page*>	  FreePages;
+	std::queue<Page*> AllocatedPages;
+	uint32			  MinValidID = 0;
+	int				  NumPages	 = 0;
 };
 
 
@@ -302,15 +325,8 @@ struct ProfilerEvent
 static_assert(std::has_unique_object_representations_v<ProfilerEvent>);
 
 
-
 // Data for a single frame of profiling events
-class ProfilerEventData
-{
-public:
-	LinearAllocator		 Allocator;					  ///< Scratch allocator for frame
-	Array<ProfilerEvent> Events;					  ///< Event storage for frame
-};
-
+using ProfilerEventData = Array<ProfilerEvent>;
 
 
 //-----------------------------------------------------------------------------
@@ -649,6 +665,8 @@ private:
 	uint32						  m_LastProcessedPresentID	  = 0;			///< The last PresentID which was processed to an even
 	uint32						  m_MsToTicks				  = 0;			///< The amount of ticks in 1 ms
 
+	friend class SubAllocator;
+	ProfilerAllocator			 m_Allocator;
 	CPUProfilerCallbacks		 m_EventCallback;
 	Mutex						 m_ThreadDataLock;			///< Mutex for accessing thread data
 	Array<EventTrack>			 m_Tracks;

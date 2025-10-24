@@ -10,6 +10,36 @@
 Profiler gProfiler;
 GPUProfiler gGPUProfiler;
 
+class SubAllocator
+{
+public:
+	const char* String(const char* pStr, uint32 id)
+	{
+		uint32 len	 = (uint32)strlen(pStr) + 1;
+		char*  pData = (char*)Allocate(len, id);
+		strcpy_s(pData, len, pStr);
+		return pData;
+	}
+
+	void* Allocate(uint32 size, uint32 id)
+	{
+		if (pPage == nullptr || id > ID || !gProfiler.m_Allocator.IsValidPage(ID) || Offset + size > pPage->Size)
+		{
+			ID	   = std::max(ID, id);
+			pPage  = gProfiler.m_Allocator.AllocatePage(ID);
+			Offset = 0;
+		}
+		void* pData = static_cast<char*>(pPage->GetData()) + Offset;
+		Offset += size;
+		return pData;
+	}
+
+private:
+	uint32						 Offset = 0;
+	uint32						 ID		= 0;
+	ProfilerAllocator::Page*	 pPage	= nullptr;
+};
+static thread_local SubAllocator gAllocator;
 
 static uint32 HSV2RGB(float hue, float saturation, float value)
 {
@@ -105,7 +135,7 @@ void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> qu
 	for (uint32 i = 0; i < frameLatency; ++i)
 	{
 		m_QueryData[i].Pairs.resize(queryCapacity / 2);
-		m_QueryData[i].Events.Events.resize(queryCapacity / 2);
+		m_QueryData[i].Events.resize(queryCapacity / 2);
 	}
 
 	m_IsInitialized = true;
@@ -145,7 +175,7 @@ void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName,
 
 	// Allocate a query range. This stores a begin/end query index pair. (Also event index)
 	uint32 eventIndex = m_EventIndex.fetch_add(1);
-	if (eventIndex >= queryData.Events.Events.size())
+	if (eventIndex >= queryData.Events.size())
 		return;
 
 	// Record a timestamp query and assign to the commandlist
@@ -153,8 +183,8 @@ void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName,
 	cmdListQuery.EventIndex = eventIndex;
 
 	// Allocate an event in the sample history
-	ProfilerEvent& event = queryData.Events.Events[eventIndex];
-	event.pName			 = queryData.Events.Allocator.String(pName);
+	ProfilerEvent& event = queryData.Events[eventIndex];
+	event.pName			 = gAllocator.String(pName, m_FrameIndex);
 	event.pFilePath		 = pFilePath;
 	event.LineNumber	 = lineNumber;
 	event.Color			 = color == 0 ? ColorFromString(pName) : color;
@@ -202,7 +232,7 @@ void GPUProfiler::Tick()
 		QueryData& queryData = GetQueryData(m_FrameToReadback);
 		for (uint32 i = 0; i < queryData.NumEvents; ++i)
 		{
-			ProfilerEvent&		  event		 = queryData.Events.Events[i];
+			ProfilerEvent&		  event		 = queryData.Events[i];
 			QueryData::QueryPair& queryRange = queryData.Pairs[i];
 			gAssert(queryRange.IsValid());
 
@@ -218,7 +248,6 @@ void GPUProfiler::Tick()
 
 			gProfiler.AddEvent(queue.TrackIndex, event, m_FrameToReadback);
 		}
-		queryData.Events.Allocator.Reset();
 		queryData.NumEvents = 0;
 
 		++m_FrameToReadback;
@@ -277,7 +306,7 @@ void GPUProfiler::ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3
 					if (query.EventIndex == CommandListState::Query::InvalidEventFlag)
 						continue;
 
-					ProfilerEvent& sampleEvent = queryData.Events.Events[query.EventIndex];
+					ProfilerEvent& sampleEvent = queryData.Events[query.EventIndex];
 					sampleEvent.QueueIndex	   = queueIndex;
 				}
 				else
@@ -294,7 +323,7 @@ void GPUProfiler::ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3
 					pair.QueryIndexEnd		   = query.QueryIndex;
 
 					// Compute event depth
-					ProfilerEvent& sampleEvent = queryData.Events.Events[beginEventQuery.EventIndex];
+					ProfilerEvent& sampleEvent = queryData.Events[beginEventQuery.EventIndex];
 					sampleEvent.Depth		   = eventStack.GetSize();
 					gAssert(sampleEvent.QueueIndex == queueIndex, "Begin/EndEvent must be recorded on the same queue");
 				}
@@ -501,6 +530,9 @@ void Profiler::Initialize(uint32 historySize)
 void Profiler::Shutdown()
 {
 	m_Tracks.clear();
+	m_BeginFrameTicks.clear();
+
+	m_Allocator.Release();
 }
 
 // Begin a new CPU event on the current thread
@@ -518,12 +550,12 @@ void Profiler::BeginEvent(const char* pName, uint32 color, const char* pFilePath
 	// Record new event
 	EventTrack&		   track	 = GetCurrentThreadTrack();
 	ProfilerEventData& eventData = track.GetFrameData(m_FrameIndex);
-	track.EventStack.Push() = (uint32)eventData.Events.size();
+	track.EventStack.Push() = (uint32)eventData.size();
 
-	ProfilerEvent& newEvent = eventData.Events.emplace_back();
-	newEvent.Depth			= track.EventStack.GetSize();
+	ProfilerEvent& newEvent = eventData.emplace_back();
+	newEvent.Depth			= track.EventStack.GetSize() - 1;
 	newEvent.ThreadIndex	= track.Index;
-	newEvent.pName			= eventData.Allocator.String(pName);
+	newEvent.pName			= gAllocator.String(pName, m_FrameIndex);
 	newEvent.pFilePath		= pFilePath;
 	newEvent.LineNumber		= lineNumber;
 	newEvent.Color			= color == 0 ? ColorFromString(pName) : color;
@@ -547,21 +579,21 @@ void Profiler::EndEvent()
 
 	gAssert(track.EventStack.GetSize() > 0, "Event mismatch. Called EndEvent more than BeginEvent");
 	uint32		   eventIndex = track.EventStack.Pop();
-	ProfilerEvent& event	  = track.GetFrameData(m_FrameIndex).Events[eventIndex];
+	ProfilerEvent& event	  = track.GetFrameData(m_FrameIndex)[eventIndex];
 	QueryPerformanceCounter((LARGE_INTEGER*)(&event.TicksEnd));
 }
 
 
 void Profiler::AddEvent(uint32 trackIndex, const ProfilerEvent& event, uint32 frameIndex)
 {
-	EventTrack& track = m_Tracks[trackIndex];
-	ProfilerEventData& data	 = track.GetFrameData(frameIndex);
+	EventTrack&		   track  = m_Tracks[trackIndex];
+	ProfilerEventData& events = track.GetFrameData(frameIndex);
 
 	// Name must be copied
 	ProfilerEvent newEvent = event;
-	newEvent.pName		   = data.Allocator.String(newEvent.pName);
+	newEvent.pName		   = gAllocator.String(newEvent.pName, frameIndex);
 
-	data.Events.push_back(newEvent);
+	events.push_back(newEvent);
 }
 
 
@@ -703,16 +735,19 @@ void Profiler::Tick()
 	std::scoped_lock lock(m_ThreadDataLock);
 	for (EventTrack& track : m_Tracks)
 	{
-		ProfilerEventData& eventData = track.GetFrameData(m_FrameIndex);
-		eventData.Events.clear();
-		eventData.Allocator.Reset();
+		ProfilerEventData& events = track.GetFrameData(m_FrameIndex);
+		events.clear();
 	}
 
 	QueryPerformanceCounter((LARGE_INTEGER*)&m_BeginFrameTicks[m_FrameIndex % m_BeginFrameTicks.size()]);
 
 	// Begin a "CPU Frame" event
 	BeginEvent("CPU Frame", GetFrameColor(m_FrameIndex));
+
+	if (m_FrameIndex >= m_HistorySize)
+		m_Allocator.Evict(m_FrameIndex - m_HistorySize);
 }
+
 
 
 // Register a new thread
