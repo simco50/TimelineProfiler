@@ -609,9 +609,12 @@ public:
 private:
 	struct PresentEntry
 	{
+		constexpr static uint64 sQPCDroppedFrame = ~0ull;		///< QPC when frame is dropped (due to tearing)
+		constexpr static uint64 sQPCMissedFrame	 = ~0ull - 1;	///< QPC when frame was missed on CPU (rare)
+
+		uint64 PresentQPC = sQPCDroppedFrame;
+		uint64 DisplayQPC = sQPCDroppedFrame;
 		uint32 PresentID  = ~0u;
-		uint64 PresentQPC = ~0u;
-		uint64 DisplayQPC = ~0ull;
 		uint32 FrameIndex = 0;
 	};
 
@@ -637,13 +640,14 @@ private:
 		return &entry;
 	}
 
-	IDXGISwapChain*				  m_pPresentSwapChain		  = nullptr;
-	int							  m_PresentTrackIndex		  = -1;
-	StaticArray<PresentEntry, 32> m_PresentQueue			  = {};
-	uint32						  m_LastQueuedPresentID		  = 0;
-	uint32						  m_LastQueriedPresentID	  = 0;
-	uint32						  m_LastProcessedPresentID	  = 0;
-	uint32						  m_MsToTicks				  = 0;
+	IDXGISwapChain*				  m_pPresentSwapChain		  = nullptr;	///< The swapchain that was last presented with
+	int							  m_PresentTrackIndex		  = -1;			///< The track index for the present timeline
+	StaticArray<PresentEntry, 32> m_PresentQueue			  = {};			///< Queue to register information whenever Present is called
+	uint32						  m_LastQueuedPresentID		  = 0;			///< PresentID after the last Present was called
+	uint32						  m_LastQueriedPresentID	  = 0;			///< The last PresentID which GetFrameStatistics has provided data for
+	uint32						  m_LastSyncRefreshCount	  = 0;			///< The SyncRefreshCount of the last queried frame statistics
+	uint32						  m_LastProcessedPresentID	  = 0;			///< The last PresentID which was processed to an even
+	uint32						  m_MsToTicks				  = 0;			///< The amount of ticks in 1 ms
 
 	CPUProfilerCallbacks		 m_EventCallback;
 	Mutex						 m_ThreadDataLock;			///< Mutex for accessing thread data
