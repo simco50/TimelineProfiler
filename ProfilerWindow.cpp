@@ -97,8 +97,6 @@ struct HUDContext
 	bool  IsSelectingRange	  = false;
 	float RangeSelectionStart = 0.0f;
 	char  SearchString[128]{};
-	bool  PauseThreshold	 = false;
-	float PauseThresholdTime = 100.0f;
 	bool  IsPaused			 = false;
 
 	struct SelectedStatData
@@ -341,11 +339,6 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 							 color.Value.w *= 0.3f;
 							 textColor.Value.w *= 0.5f;
 						 }
-						 else if (context.PauseThreshold && ms >= context.PauseThresholdTime)
-						 {
-							 gProfiler.SetPaused(true);
-							 gGPUProfiler.SetPaused(true);
-						 }
 
 						 // Darken the bottom
 						 ImColor colorBottom = color.Value * ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
@@ -397,9 +390,13 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 						 // If the bar size is large enough, draw the name of the bar on top
 						 if (itemRect.GetWidth() > 10.0f)
 						 {
-							 const char* pBarText;
-							 ImFormatStringToTempBuffer(&pBarText, nullptr, "%s (%.2f ms)", event.pName, ms);
+							 const char* pBarText = event.pName;
 							 ImVec2 textSize = ImGui::CalcTextSize(pBarText);
+							 if (textSize.x * 2 < itemRect.GetWidth())
+							 {
+								 ImFormatStringToTempBuffer(&pBarText, nullptr, "%s (%.2f ms)", event.pName, ms);
+								 textSize = ImGui::CalcTextSize(pBarText);
+							 }
 
 							 itemRect.Expand(ImVec2(-2.0f, 0.0f));
 
@@ -723,13 +720,7 @@ void DrawProfilerHUD()
 	else
 		ImGui::Text("Press Space to pause");
 
-	ImGui::SameLine();
-
-	ImGui::Checkbox("Pause threshold", &Context().PauseThreshold);
-	ImGui::SameLine();
-	ImGui::SetNextItemWidth(150);
-	ImGui::SliderFloat("##Treshold", &context.PauseThresholdTime, 0.0f, 16.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-	ImGui::SameLine();
+	ImGui::SameLine(100);
 
 	ImGui::Dummy(ImVec2(30, 0));
 	ImGui::SameLine();
@@ -754,7 +745,7 @@ void DrawProfilerHUD()
 	if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Space))
 		context.IsPaused = !context.IsPaused;
 
-	if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+	if (ImGui::IsWindowHovered() && (ImGui::IsMouseClicked(ImGuiMouseButton_Right) || ImGui::IsMouseClicked(ImGuiMouseButton_Left)))
 		ImGui::SetWindowFocus();
 
 	gProfiler.SetPaused(context.IsPaused);
