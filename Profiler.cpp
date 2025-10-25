@@ -117,13 +117,10 @@ void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> qu
 		gVerifyHR(pQueue->GetTimestampFrequency(&queueInfo.GPUFrequency));
 
 		if (!GetHeap(queueInfo.QueryHeapIndex).IsInitialized())
-		{
-			GetHeap(queueInfo.QueryHeapIndex).Initialize(pDevice, pQueue, QueryHeap::cMaxNumQueries, frameLatency);
-		}
+			GetHeap(queueInfo.QueryHeapIndex).Initialize(pDevice, pQueue, QueryData::cMaxNumQueries, frameLatency);
 
 		queueInfo.TrackIndex = gProfiler.RegisterTrack(queueInfo.Name, Profiler::EventTrack::EType::GPU, queueInfo.Index);
 	}
-
 
 	// Maximum number of events is the number of queries is the total capacity of all query heaps divided by 2 (a pair of queries per event)
 	int queryCapacity = 0;
@@ -168,8 +165,8 @@ void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName,
 		return;
 
 	// Register a query on the commandlist
-	CommandListState&		 cmdListState = *GetState(pCmd, true);
-	CommandListState::Query& cmdListQuery = cmdListState.Queries.emplace_back();
+	CommandListState& cmdListState = *GetState(pCmd, true);
+	QueryData::Query& cmdListQuery = cmdListState.Queries.emplace_back();
 
 	QueryData& queryData = GetQueryData();
 
@@ -202,10 +199,10 @@ void GPUProfiler::EndEvent(ID3D12GraphicsCommandList* pCmd)
 		return;
 
 	// Record a timestamp query and assign to the commandlist
-	CommandListState&		 cmdListState = *GetState(pCmd, true);
-	CommandListState::Query& query		  = cmdListState.Queries.emplace_back();
-	query.QueryIndex					  = GetHeap(pCmd->GetType()).RecordQuery(pCmd);
-	query.EventIndex					  = CommandListState::Query::EndEventFlag; // Range index to indicate this is an 'End' query
+	CommandListState& cmdListState = *GetState(pCmd, true);
+	QueryData::Query& query		   = cmdListState.Queries.emplace_back();
+	query.QueryIndex			   = GetHeap(pCmd->GetType()).RecordQuery(pCmd);
+	query.EventIndex			   = QueryData::Query::EndEventFlag; // Range index to indicate this is an 'End' query
 }
 
 // Process the last frame and advance to the next
@@ -297,13 +294,13 @@ void GPUProfiler::ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3
 		CommandListState* pCommandListQueries = GetState(pCmd, false);
 		if (pCommandListQueries)
 		{
-			for (CommandListState::Query& query : pCommandListQueries->Queries)
+			for (QueryData::Query& query : pCommandListQueries->Queries)
 			{
-				if (query.EventIndex != CommandListState::Query::EndEventFlag)
+				if (query.EventIndex != QueryData::Query::EndEventFlag)
 				{
 					// If it's a "BeginEvent", add to the stack
 					eventStack.Push() = query;
-					if (query.EventIndex == CommandListState::Query::InvalidEventFlag)
+					if (query.EventIndex == QueryData::Query::InvalidEventFlag)
 						continue;
 
 					ProfilerEvent& sampleEvent = queryData.Events[query.EventIndex];
@@ -313,8 +310,8 @@ void GPUProfiler::ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3
 				{
 					// If it's an "EndEvent", pop top query from the stack and pair up
 					gAssert(eventStack.GetSize() > 0, "Event Begin/End mismatch");
-					CommandListState::Query beginEventQuery = eventStack.Pop();
-					if (beginEventQuery.EventIndex == CommandListState::Query::InvalidEventFlag)
+					QueryData::Query beginEventQuery = eventStack.Pop();
+					if (beginEventQuery.EventIndex == QueryData::Query::InvalidEventFlag)
 						continue;
 
 					// Pair up Begin/End query indices
@@ -390,8 +387,6 @@ GPUProfiler::CommandListState::~CommandListState()
 void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pResolveQueue, uint32 maxNumQueries, uint32 frameLatency)
 {
 	gAssert(gProfiler.IsInitialized());
-
-	gAssert(maxNumQueries <= cMaxNumQueries, "Max number of queries (%d) should not exceed %d", maxNumQueries, cMaxNumQueries);
 
 	m_pResolveQueue = pResolveQueue;
 	m_FrameLatency	= frameLatency;

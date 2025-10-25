@@ -7,6 +7,7 @@
 #include "IconsFontAwesome4_data.h"
 #include "Roboto_data.h"
 #include <fstream>
+#include <algorithm>
 #include <imgui_internal.h>
 
 #define NOMINMAX

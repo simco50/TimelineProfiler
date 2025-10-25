@@ -22,7 +22,6 @@
 
 #else
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cinttypes>
@@ -391,9 +390,6 @@ private:
 	struct QueryHeap
 	{
 	public:
-		constexpr static uint32 cQueryIndexBits = 16u;
-		constexpr static uint32 cMaxNumQueries = (1u << cQueryIndexBits) - 1u;
-		
 		void Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pResolveQueue, uint32 maxNumQueries, uint32 frameLatency);
 		void Shutdown();
 
@@ -432,14 +428,29 @@ private:
 	// Data for a single frame of GPU queries. One for each frame latency
 	struct QueryData
 	{
+		constexpr static uint32 cQueryIndexBits = 16u;
+		constexpr static uint32 cMaxNumQueries	= (1u << cQueryIndexBits) - 1u;
+		
 		struct QueryPair
 		{
-			uint32 QueryIndexBegin : QueryHeap::cQueryIndexBits = 0xFFFF;
-			uint32 QueryIndexEnd   : QueryHeap::cQueryIndexBits = 0xFFFF;
+			uint32 QueryIndexBegin : cQueryIndexBits = 0xFFFF;
+			uint32 QueryIndexEnd   : cQueryIndexBits = 0xFFFF;
 
 			bool IsValid() const { return QueryIndexBegin != 0xFFFF && QueryIndexEnd != 0xFFFF; }
 		};
 		static_assert(sizeof(QueryPair) == sizeof(uint32));
+
+		struct Query
+		{
+			static constexpr uint32 EndEventFlag	 = 0xFFFE;
+			static constexpr uint32 InvalidEventFlag = 0xFFFF;
+
+			uint32 QueryIndex : QueryData::cQueryIndexBits = InvalidEventFlag; ///< The index into the query heap
+			uint32 EventIndex : 16						   = InvalidEventFlag; ///< The ProfilerEvent index. 0xFFFE is it is an "EndEvent"
+		};
+		static_assert(sizeof(Query) == sizeof(uint32));
+		static_assert(std::has_unique_object_representations_v<Query>);
+
 		Array<QueryPair>  Pairs;
 		ProfilerEventData Events;
 		uint32			  NumEvents = 0;
@@ -453,21 +464,10 @@ private:
 		CommandListState(GPUProfiler* profiler, ID3D12CommandList* pCmd);
 		~CommandListState();
 
-		struct Query
-		{
-			static constexpr uint32 EndEventFlag	 = 0xFFFE;
-			static constexpr uint32 InvalidEventFlag = 0xFFFF;
-			
-			uint32 QueryIndex : QueryHeap::cQueryIndexBits	= InvalidEventFlag; ///< The index into the query heap
-			uint32 EventIndex : 16							= InvalidEventFlag; ///< The ProfilerEvent index. 0xFFFE is it is an "EndEvent"
-		};
-		static_assert(sizeof(Query) == sizeof(uint32));
-		static_assert(std::has_unique_object_representations_v<Query>);
-
-		GPUProfiler*	   pProfiler		  = nullptr;
-		ID3D12CommandList* pCommandList = nullptr;
-		uint32			   DestructionEventID = 0;
-		Array<Query>	   Queries;
+		GPUProfiler*			pProfiler		   = nullptr;
+		ID3D12CommandList*		pCommandList	   = nullptr;
+		uint32					DestructionEventID = 0;
+		Array<QueryData::Query> Queries;
 	};
 
 	CommandListState* GetState(ID3D12CommandList* pCmd, bool createIfNotFound);
@@ -497,7 +497,7 @@ private:
 	HashMap<ID3D12CommandList*, CommandListState*> m_CommandListMap;	   ///< Maps commandlist to index
 
 	static constexpr uint32 MAX_EVENT_DEPTH = 32;
-	using ActiveEventStack					= FixedArray<CommandListState::Query, MAX_EVENT_DEPTH>;
+	using ActiveEventStack					= FixedArray<QueryData::Query, MAX_EVENT_DEPTH>;
 	Array<ActiveEventStack>					   m_QueueEventStack; ///< Stack of active events for each command queue
 	Array<QueueInfo>						   m_Queues;		  ///< All registered queues
 	HashMap<const ID3D12CommandQueue*, uint32> m_QueueIndexMap;	  ///< Map from command queue to index
