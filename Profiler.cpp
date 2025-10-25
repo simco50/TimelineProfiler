@@ -612,11 +612,12 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 			// that means the swapchain may have been recreated and we need to reset.
 			if (m_LastQueuedPresentID > presentID || m_pPresentSwapChain != pSwapChain)
 			{
-				m_LastQueriedPresentID	 = 0;
-				m_LastProcessedPresentID = 0;
-				m_PresentQueue			 = {};
-				m_LastSyncRefreshCount	 = 0;
-				m_pPresentSwapChain	   = pSwapChain;
+				m_LastQueriedPresentID		  = 0;
+				m_LastProcessedPresentID	  = 0;
+				m_LastProcessedValidPresentID = 0;
+				m_PresentQueue				  = {};
+				m_LastSyncRefreshCount		  = 0;
+				m_pPresentSwapChain			  = pSwapChain;
 			}
 
 			PresentEntry* pEntry = GetPresentEntry(presentID, true);
@@ -636,21 +637,37 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 			// Update the entry that was presented. All the ones before that were not queried are considered dropped.
 			PresentEntry* pEntry = GetPresentEntry(frameStats.PresentCount, false);
 			if (pEntry)
-				pEntry->DisplayQPC = frameStats.SyncQPCTime.QuadPart;
-
-			// It's rare but possible for the CPU to miss a refresh in the time multiple presents have been processed.
-			// In this case, there isn't enough information to resolve it. Try to estimate, otherwise ignore the frame.
-			if (frameStats.SyncRefreshCount > 0 && frameStats.SyncRefreshCount > m_LastSyncRefreshCount + 1)
 			{
+				pEntry->DisplayQPC = frameStats.SyncQPCTime.QuadPart;
+				//printf("Frame %d - ID %d - SyncCount: %d - PresentCount: %d\n", pEntry->FrameIndex, pEntry->PresentID, frameStats.PresentRefreshCount, frameStats.SyncRefreshCount);
+			}
+
+			// It's possible for the CPU to miss a refresh in the time multiple presents have been processed (and not dropped).
+			// In this case, there isn't enough information to resolve it. Try to estimate, otherwise ignore the frame.
+			uint32 numMissedSyncs = frameStats.SyncRefreshCount - m_LastSyncRefreshCount - 1;
+			if (frameStats.SyncRefreshCount > 0 && numMissedSyncs > 0)
+			{
+				// If the previous entry was not processed, it means we missed it in GetFrameStatistics
 				PresentEntry* pPreviousEntry = GetPresentEntry(frameStats.PresentCount - 1, false);
 				if (pPreviousEntry && pPreviousEntry->DisplayQPC == PresentEntry::sQPCDroppedFrame)
 				{
-					// If there was a valid present before the previous one, copy that time to at least get some estimate
+					// If there was a valid present before the previous one, average the time to at least get some estimate
 					PresentEntry* pPreviousPreviousEntry = GetPresentEntry(frameStats.PresentCount - 2, false);
-					if (pPreviousPreviousEntry)
-						pPreviousEntry->DisplayQPC = pPreviousPreviousEntry->DisplayQPC;
+					if (pPreviousPreviousEntry && pEntry)
+					{
+						gAssert(m_LastProcessedPresentID < pPreviousPreviousEntry->PresentID);
+
+						// Taking a guess: the sync happened one sync after the one before it (most likely timing to have been missed)
+						uint64 duration			 = pEntry->DisplayQPC - pPreviousPreviousEntry->DisplayQPC;
+						uint64 estimatedSyncTime = pPreviousPreviousEntry->DisplayQPC + duration / (numMissedSyncs + 1);
+
+						pPreviousEntry->DisplayQPC = estimatedSyncTime;
+					}
 					else
+					{
+						// If there's no way to estimate, just drop it
 						pPreviousEntry->DisplayQPC = PresentEntry::sQPCMissedFrame;
+					}
 				}
 			}
 
@@ -664,9 +681,16 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 	// Process all entries up until the last present
 	for (uint32 presentID = m_LastProcessedPresentID + 1; presentID < m_LastQueriedPresentID; ++presentID)
 	{
-		const PresentEntry* pToProcessEntry	  = GetPresentEntry(presentID, false);
-		const PresentEntry* pCurrPresentEntry = GetPresentEntry(m_LastQueriedPresentID, false);
-		if (!pCurrPresentEntry)
+		const PresentEntry* pToProcessEntry = GetPresentEntry(presentID, false);
+
+		// Search from the last processed valid entry where the next one is
+		const PresentEntry* pNextValidPresentEntry = nullptr;
+		for (m_LastProcessedValidPresentID; m_LastProcessedValidPresentID <= m_LastQueriedPresentID && !pNextValidPresentEntry; ++m_LastProcessedValidPresentID)
+		{
+			pNextValidPresentEntry = GetPresentEntry(m_LastProcessedValidPresentID, false);
+		}
+
+		if (!pNextValidPresentEntry)
 		{
 			m_LastProcessedPresentID = m_LastQueriedPresentID;
 			break;
@@ -684,8 +708,8 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 					.pName		= "Discarded",
 					.Color		= GetFrameColor(pToProcessEntry->FrameIndex),
 					.Depth		= 1,
-					.TicksBegin = pCurrPresentEntry->DisplayQPC,
-					.TicksEnd	= pCurrPresentEntry->DisplayQPC + m_MsToTicks,
+					.TicksBegin = pNextValidPresentEntry->DisplayQPC,
+					.TicksEnd	= pNextValidPresentEntry->DisplayQPC + m_MsToTicks,
 				};
 				AddEvent(m_PresentTrackIndex, event, pToProcessEntry->FrameIndex);
 			}
@@ -693,7 +717,7 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 			{
 				// If the timing of the refresh is the same as the current frame, stack the events. 
 				// Wait for the next frame with a different refresh time
-				if (pCurrPresentEntry->DisplayQPC == pToProcessEntry->DisplayQPC)
+				if (pNextValidPresentEntry->DisplayQPC == pToProcessEntry->DisplayQPC)
 					break;
 
 				ProfilerEvent event{
@@ -701,11 +725,13 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 					.Color		= GetFrameColor(pToProcessEntry->FrameIndex),
 					.Depth		= stackSize,
 					.TicksBegin = pToProcessEntry->DisplayQPC,
-					.TicksEnd	= pCurrPresentEntry->DisplayQPC,
+					.TicksEnd	= pNextValidPresentEntry->DisplayQPC,
 				};
 				++stackSize;
 
 				AddEvent(m_PresentTrackIndex, event, pToProcessEntry->FrameIndex);
+
+				m_LastProcessedValidPresentID = pNextValidPresentEntry->PresentID;
 			}
 		}
 

@@ -656,14 +656,15 @@ private:
 		return &entry;
 	}
 
-	IDXGISwapChain*				  m_pPresentSwapChain		  = nullptr;	///< The swapchain that was last presented with
-	int							  m_PresentTrackIndex		  = -1;			///< The track index for the present timeline
-	StaticArray<PresentEntry, 32> m_PresentQueue			  = {};			///< Queue to register information whenever Present is called
-	uint32						  m_LastQueuedPresentID		  = 0;			///< PresentID after the last Present was called
-	uint32						  m_LastQueriedPresentID	  = 0;			///< The last PresentID which GetFrameStatistics has provided data for
-	uint32						  m_LastSyncRefreshCount	  = 0;			///< The SyncRefreshCount of the last queried frame statistics
-	uint32						  m_LastProcessedPresentID	  = 0;			///< The last PresentID which was processed to an even
-	uint32						  m_MsToTicks				  = 0;			///< The amount of ticks in 1 ms
+	IDXGISwapChain*				  m_pPresentSwapChain			= nullptr; ///< The swapchain that was last presented with
+	int							  m_PresentTrackIndex			= -1;	   ///< The track index for the present timeline
+	StaticArray<PresentEntry, 32> m_PresentQueue				= {};	   ///< Queue to register information whenever Present is called
+	uint32						  m_LastQueuedPresentID			= 0;	   ///< PresentID after the last Present was called
+	uint32						  m_LastQueriedPresentID		= 0;	   ///< The last PresentID which GetFrameStatistics has provided data for
+	uint32						  m_LastProcessedValidPresentID = 0;	   ///< The last PresentID which GetFrameStatistics has provided data for
+	uint32						  m_LastSyncRefreshCount		= 0;	   ///< The SyncRefreshCount of the last queried frame statistics
+	uint32						  m_LastProcessedPresentID		= 0;	   ///< The last PresentID which was processed to an even
+	uint32						  m_MsToTicks					= 0;	   ///< The amount of ticks in 1 ms
 
 	friend class SubAllocator;
 	ProfilerAllocator			 m_Allocator;
