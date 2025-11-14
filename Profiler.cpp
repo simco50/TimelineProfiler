@@ -10,6 +10,113 @@
 Profiler gProfiler;
 GPUProfiler gGPUProfiler;
 
+
+// Thread-safe page allocator that recycles pages based on ID
+struct ProfilerAllocator
+{
+public:
+	static constexpr uint32 cPageSize = 2 * 1024;
+
+	struct Page
+	{
+		uint32 ID	= 0;
+		uint32 Size = 0;
+
+		void* GetData()
+		{
+			return static_cast<void*>(this + 1);
+		}
+
+		static Page* Create(uint32 size)
+		{
+			void* pData = new char[sizeof(Page) + size];
+			Page* pPage = new (pData) Page;
+			pPage->Size = size;
+			return pPage;
+		}
+
+		static void Release(Page* pPage)
+		{
+			char* pData = reinterpret_cast<char*>(pPage);
+			delete[] pData;
+		}
+	};
+	static_assert(std::is_trivially_destructible_v<Page>);
+
+	void Release()
+	{
+		while (!AllocatedPages.empty())
+		{
+			Page* pPage = AllocatedPages.front();
+			Page::Release(pPage);
+			AllocatedPages.pop();
+		}
+		while (FreePages.empty())
+		{
+			Page* pPage = FreePages.back();
+			Page::Release(pPage);
+			FreePages.pop_back();
+		}
+	}
+
+	Page* AllocatePage(uint32 id)
+	{
+		std::lock_guard m(PageLock);
+
+		Page* pPage = nullptr;
+		if (FreePages.empty())
+		{
+			pPage = Page::Create(cPageSize);
+			++NumPages;
+		}
+		else
+		{
+			pPage = FreePages.back();
+			FreePages.pop_back();
+		}
+		pPage->ID = id;
+		AllocatedPages.push(pPage);
+		return pPage;
+	}
+
+	bool IsValidPage(uint32 id)
+	{
+		return id >= MinValidID;
+	}
+
+	void Evict(uint32 id)
+	{
+		std::lock_guard m(PageLock);
+
+		gAssert(NumPages == FreePages.size() + AllocatedPages.size());
+
+		while (!AllocatedPages.empty())
+		{
+			Page* pPage = AllocatedPages.front();
+			if (id >= pPage->ID)
+			{
+				FreePages.push_back(pPage);
+				AllocatedPages.pop();
+			}
+			else
+			{
+				break;
+			}
+		}
+
+		MinValidID = id + 1;
+	}
+
+private:
+	std::mutex		  PageLock;
+	Array<Page*>	  FreePages;
+	std::queue<Page*> AllocatedPages;
+	uint32			  MinValidID = 0;
+	int				  NumPages	 = 0;
+};
+
+static ProfilerAllocator sProfilerAllocator;
+
 class SubAllocator
 {
 public:
@@ -23,10 +130,10 @@ public:
 
 	void* Allocate(uint32 size, uint32 id)
 	{
-		if (pPage == nullptr || id > ID || !gProfiler.m_Allocator.IsValidPage(ID) || Offset + size > pPage->Size)
+		if (pPage == nullptr || id > ID || !sProfilerAllocator.IsValidPage(ID) || Offset + size > pPage->Size)
 		{
 			ID	   = std::max(ID, id);
-			pPage  = gProfiler.m_Allocator.AllocatePage(ID);
+			pPage  = sProfilerAllocator.AllocatePage(ID);
 			Offset = 0;
 		}
 		void* pData = static_cast<char*>(pPage->GetData()) + Offset;
@@ -527,7 +634,7 @@ void Profiler::Shutdown()
 	m_Tracks.clear();
 	m_BeginFrameTicks.clear();
 
-	m_Allocator.Release();
+	sProfilerAllocator.Release();
 }
 
 // Begin a new CPU event on the current thread
@@ -763,7 +870,7 @@ void Profiler::Tick()
 	BeginEvent("CPU Frame", GetFrameColor(m_FrameIndex));
 
 	if (m_FrameIndex >= m_HistorySize)
-		m_Allocator.Evict(m_FrameIndex - m_HistorySize);
+		sProfilerAllocator.Evict(m_FrameIndex - m_HistorySize);
 }
 
 
